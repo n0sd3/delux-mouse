@@ -296,3 +296,32 @@ Fonte: segunda análise estática do driver (relatório completo em `.re/readbac
 | evento `0x10` → app | **confirmado**: botão de DPI move a seleção "Atual" e o cabeçalho |
 | luz segue DPI | **confirmado**: app reenvia `0x05` com a cor do estágio ao receber `0x10` |
 | LOD, ripple, angle snap, motion sync, debounce | enviados como o driver envia; efeito não confirmado (só perceptível por sensação) |
+
+## Macros (cmd 0x09) e modo cabo — variante 0x30, 2026-11-10
+
+Relatórios completos da análise (fora do git): `.re/macros-ms4-report.md`, `.re/wired-ms4-report.md`, `.re/cmd05-ms4-report.md`.
+
+### Cmd 0x09 — macro (uma por botão)
+
+`09 6F <slot+1> <modo> 00 00 00 <vezes> <n registros> <registros…> <sum16 BE de [3..0x6D)>`, 111 bytes.
+
+- Registro = `[flag | atraso/10, código]`; flag `0x01` pressiona, `0x81` solta. Como o bit 0 está sempre ligado, só existem atrasos de 10, 30, 50 … 1270 ms (atraso é a espera **depois** da ação).
+- Código = HID usage de teclado (modificadores são teclas comuns E0..E7); botões do mouse: F1 esq., F2 dir., F3 meio, F4 avançar, F5 voltar. Código `03` é marcador de atraso longo (não usado pelo app).
+- Modo: 0 = tocar N vezes (byte 7), 1 = repetir até qualquer tecla, 2 = repetir enquanto segura.
+- Driver permite 46 ações. Botão aponta para a macro com `12 00 <slot+1>` no cmd 0x08; driver envia 0x08 antes de 0x09.
+- **Confirmado no hardware**: macro "a, b" e depois "c, d" no lateral de trás (slot 7 → byte 8), modo 0, 1 vez.
+
+### Modo cabo
+
+- Mouse com a chave em **OFF** e cabo ligado enumera como `1D57:FA73` "USB Gaming Mouse", full-speed (12 Mb/s). Com a chave em ON o cabo só carrega e o mouse segue no receptor.
+- Comandos = feature reports na coleção usage page `0x0B`; o ID do report é o byte de comando e o conteúdo é o pacote interno **sem** o envelope `04 len idx … checksum`. Tamanhos do descritor (ID incluído): 04 → 52, 05 → 13, 06 → 9, 08 → 59, 0C → 6 (o pacote interno é cortado nesse tamanho; o resto era preenchimento).
+- Macro no cabo: dois reports de 64 bytes `09 40 <slot+1> <pedaço 0|1>` + 60 bytes de `inner[3 + 60·pedaço…]`, 200 ms entre eles.
+- Polling limitado a 1000 Hz (o driver nunca envia mais no cabo).
+- Eventos: os mesmos `03 30 …` na mesma interface; bateria chega como "carregando".
+- **Leitura não existe**: GET_REPORT nos feature reports 04/05/06/07/08/0A/0B/0C/10 dá timeout; A0 devolve zeros.
+- **Confirmado no hardware**: DPI (400 → lento), reenvio do perfil completo, macro nova ("cd") gravada pelo cabo; app mostra "Conectado por cabo".
+- O descritor declara outros feature reports (22..2E) que o driver nunca usa. Não tocar.
+
+### Outros achados
+
+- Página MS_4 envia `0C 0A 01 FE 01 FE…` no início de **todo** Aplicar (parece preâmbulo, não reset). O app não envia e os comandos funcionam sem ele.

@@ -1,6 +1,7 @@
 //! `delux` — diagnostic CLI for the Delux M900 PRO 8K receiver.
 
 mod hex;
+mod rate;
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -91,6 +92,16 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Mede a taxa real de relatórios do mouse (mova o mouse durante a medição).
+    MeasureRate {
+        #[arg(long, default_value_t = 6)]
+        secs: u64,
+    },
+    /// Mostra os relatórios de teclado que o receptor emite (botões remapeados).
+    ListenKeys {
+        #[arg(long, default_value_t = 20)]
+        secs: u64,
+    },
     /// Reset de fábrica (cmd 0x0C).
     Reset {
         #[arg(long)]
@@ -154,6 +165,19 @@ fn run(cli: Cli) -> Result<(), String> {
             send(&encode_buttons(&ButtonMap::factory()).map_err(|e| e.to_string())?, yes)
         }
         Cmd::Apply { profile, yes } => apply(profile, yes),
+        Cmd::MeasureRate { secs } => {
+            println!("medindo {secs}s — mova o mouse sem parar …");
+            let ts = delux_hid::capture_mouse_report_times(secs).map_err(|e| e.to_string())?;
+            println!("{} relatórios; pico ≈ {} Hz", ts.len(), rate::peak_rate_hz(&ts));
+            Ok(())
+        }
+        Cmd::ListenKeys { secs } => {
+            println!("escutando teclas {secs}s …");
+            for r in delux_hid::capture_keyboard_reports(secs).map_err(|e| e.to_string())? {
+                println!("{}", hex::format_hex(&r));
+            }
+            Ok(())
+        }
         Cmd::Reset { yes } => send(&encode_factory_reset(), yes),
     }
 }

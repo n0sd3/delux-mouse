@@ -45,6 +45,18 @@ impl Profile {
         }
     }
 
+    /// The vendor driver's defaults: what "restore factory settings" sends.
+    pub fn factory(name: &str) -> Self {
+        let mut p = Self::default_named(name);
+        for (stage, dpi) in p.sensor.stages.iter_mut().zip([400, 800, 1200, 1600, 3200, 5000]) {
+            stage.dpi = dpi;
+        }
+        p.sensor.current_stage = 2;
+        p.sensor.ripple = true;
+        p.sensor.motion_sync = true;
+        p
+    }
+
     /// Every problem found, in Portuguese, ready to show.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errs = Vec::new();
@@ -132,6 +144,18 @@ mod tests {
     #[test]
     fn default_profile_is_valid() {
         assert_eq!(Profile::default_named("Padrão").validate(), Ok(()));
+    }
+
+    #[test]
+    fn factory_profile_matches_vendor_defaults() {
+        let p = Profile::factory("Fábrica");
+        assert_eq!(p.validate(), Ok(()));
+        let dpis: Vec<u16> = p.sensor.stages.iter().filter(|s| s.enabled).map(|s| s.dpi).collect();
+        assert_eq!(dpis, vec![400, 800, 1200, 1600, 3200, 5000]);
+        assert_eq!(p.sensor.current_stage, 2);
+        assert!(p.sensor.ripple && p.sensor.motion_sync && !p.sensor.angle_snap);
+        assert_eq!(p.buttons, delux_proto::ButtonMap::factory());
+        assert!(p.scripts.is_empty());
     }
 
     #[test]

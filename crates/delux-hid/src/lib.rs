@@ -70,3 +70,54 @@ impl Device {
         Ok(())
     }
 }
+
+/// Read raw reports from the mouse-movement interface for `secs` and return
+/// arrival times in µs. Diagnostic only; macOS may require Input Monitoring.
+pub fn capture_mouse_report_times(secs: u64) -> Result<Vec<u64>, HidError> {
+    let api = hidapi::HidApi::new()?;
+    let info = api
+        .device_list()
+        .find(|d| {
+            d.vendor_id() == VID && d.product_id() == PID && d.usage_page() == 1 && d.usage() == 2
+        })
+        .ok_or(HidError::NotFound)?;
+    let dev = api.open_path(info.path())?;
+    let start = std::time::Instant::now();
+    let mut buf = [0u8; 64];
+    let mut times = Vec::new();
+    while start.elapsed() < Duration::from_secs(secs) {
+        if dev.read_timeout(&mut buf, 50)? > 0 {
+            times.push(start.elapsed().as_micros() as u64);
+        }
+    }
+    Ok(times)
+}
+
+/// Read raw reports from every keyboard interface of the receiver for `secs`.
+/// Diagnostic only: shows which key a remapped button emits.
+pub fn capture_keyboard_reports(secs: u64) -> Result<Vec<Vec<u8>>, HidError> {
+    let api = hidapi::HidApi::new()?;
+    let mut paths = Vec::new();
+    for d in api.device_list() {
+        let is_kbd = d.vendor_id() == VID && d.product_id() == PID && d.usage_page() == 1 && d.usage() == 6;
+        if is_kbd && !paths.contains(&d.path().to_owned()) {
+            paths.push(d.path().to_owned());
+        }
+    }
+    if paths.is_empty() {
+        return Err(HidError::NotFound);
+    }
+    let devs = paths.iter().map(|p| api.open_path(p)).collect::<Result<Vec<_>, _>>()?;
+    let start = std::time::Instant::now();
+    let mut buf = [0u8; 64];
+    let mut out = Vec::new();
+    while start.elapsed() < Duration::from_secs(secs) {
+        for dev in &devs {
+            let n = dev.read_timeout(&mut buf, 20)?;
+            if n > 0 {
+                out.push(buf[..n].to_vec());
+            }
+        }
+    }
+    Ok(out)
+}

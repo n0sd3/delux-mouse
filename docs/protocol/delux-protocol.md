@@ -255,3 +255,17 @@ Onde esta seção divergir do resto do documento, vale esta seção.
 - `0x06` polling: qual nibble o receptor 8K usa — determinar pelo evento `0x20` no teste.
 - `0x05`, `0x08`: constantes conferidas por amostragem na análise original; ordem dos 18 slots a levantar no hardware.
 - Evento de bateria: tipo `0x40` medido no hardware (v0 = 1 descarregando, 84 %).
+
+### Verificação no hardware — 2026-11-10 (mouse do usuário, modelo 0x30, receptor FA65)
+
+| comando | resultado |
+|---|---|
+| `0x04` DPI/estágios | **confirmado**: 400/3200/12800 → três velocidades claramente distintas; ciclo de 3 estágios (eventos `DpiStage` 2→3→1) |
+| `0x04` LOD / ripple / angle snap / motion sync | enviados sem erro; efeito **não verificado** individualmente |
+| `0x05` luz | **confirmado**: modo 1 = vermelho estático |
+| `0x05` sleep / debounce | **não verificado** |
+| `0x06` polling | enviado sem erro; **não verificado**. Nenhum evento `0x20` em resposta; medir taxa via hidapi no macOS não distingue (70–160 Hz em qualquer ajuste — o SO agrupa relatórios) |
+| `0x08` botões | **confirmado**: slot 6 = lateral da frente, slot 7 = lateral de trás, slot 3 = botão DPI. Mouse tem só esses 3 botões além de esq/dir/meio/scroll |
+| `0x08` tecla `11 00 68` | **confirmado**: lateral de trás emite HID usage 0x68 (F13) na interface de teclado do receptor |
+| evento bateria | **confirmado**: v0 = 1 descarregando, v0 = 3 carregando (cabo conectado). v0 = 2 (cheio) não observado. Após tirar o cabo a porcentagem oscila alguns segundos (100 → 86 → 84) |
+| `0x0C` reset | **sem efeito observável sozinho**: DPI, botão remapeado e luz ficaram como estavam. "Restaurar fábrica" = `0x0C` + reenviar todas as seções com os padrões do driver |

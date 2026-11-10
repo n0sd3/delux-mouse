@@ -234,9 +234,13 @@ impl DeviceService {
         self.send(packets)
     }
 
+    /// Restore factory settings. The firmware's reset command (0x0C) changes
+    /// nothing observable on its own (verified on hardware), so, like the
+    /// vendor driver, it is followed by every section of the factory profile.
     pub fn factory_reset(&self) -> Result<(), ApplyError> {
-        let frames = frames(&encode_factory_reset()).expect("constant packet");
-        self.send_all(vec![frames]).map_err(|(_, e)| e)
+        let reset = frames(&encode_factory_reset()).expect("constant packet");
+        self.send_all(vec![reset]).map_err(|(_, e)| e)?;
+        self.apply(&Profile::factory("factory"), &Section::ALL)
     }
 
     fn send(&self, packets: Vec<(Section, Vec<Frame>)>) -> Result<(), ApplyError> {
@@ -512,6 +516,22 @@ mod tests {
         );
         assert_eq!(svc.factory_reset(), Err(ApplyError::UnsupportedModel(0x50)));
         assert!(world.written.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn factory_reset_sends_reset_then_every_default_section() {
+        // Hardware finding: cmd 0x0C alone changes nothing; the vendor driver
+        // follows it with all defaults, and so do we.
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        assert_eq!(svc.factory_reset(), Ok(()));
+        let p = Profile::factory("x");
+        let mut expected = frames(&delux_proto::encode_factory_reset()).unwrap();
+        expected.extend(frames(&encode_sensor(&p.sensor).unwrap()).unwrap());
+        expected.extend(frames(&encode_polling(p.polling)).unwrap());
+        expected.extend(frames(&encode_power_light(&p.power_light).unwrap()).unwrap());
+        expected.extend(frames(&encode_buttons(&p.buttons).unwrap()).unwrap());
+        assert_eq!(*world.written.lock().unwrap(), expected);
     }
 
     #[test]

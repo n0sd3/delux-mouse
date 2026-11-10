@@ -83,6 +83,14 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Aplica um perfil salvo (todas as seções) pelo serviço de dispositivo.
+    Apply {
+        /// Nome do perfil; padrão: o perfil ativo.
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Reset de fábrica (cmd 0x0C).
     Reset {
         #[arg(long)]
@@ -145,8 +153,42 @@ fn run(cli: Cli) -> Result<(), String> {
         Cmd::ResetButtons { yes } => {
             send(&encode_buttons(&ButtonMap::factory()).map_err(|e| e.to_string())?, yes)
         }
+        Cmd::Apply { profile, yes } => apply(profile, yes),
         Cmd::Reset { yes } => send(&encode_factory_reset(), yes),
     }
+}
+
+fn apply(name: Option<String>, yes: bool) -> Result<(), String> {
+    use delux_core::{Connection, DeviceService};
+    use delux_profile::Section;
+
+    let loaded = delux_profile::load(&delux_profile::default_path());
+    if let Some(w) = loaded.warning {
+        eprintln!("aviso: {w}");
+    }
+    let name = name.unwrap_or_else(|| loaded.store.active.clone());
+    let profile = loaded
+        .store
+        .profiles
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or(format!("perfil {name:?} não existe"))?;
+    println!("perfil {name:?}: {} seções", Section::ALL.len());
+    if !yes {
+        println!("(não enviado — use --yes para enviar)");
+        return Ok(());
+    }
+    let svc = DeviceService::spawn_default(Box::new(|_| {}));
+    let start = Instant::now();
+    while svc.status().connection != Connection::Awake {
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err("mouse sem sinal há 10 s. Mexa o mouse e tente de novo; nada enviado".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    svc.apply(profile, &Section::ALL).map_err(|e| e.to_string())?;
+    println!("aplicado.");
+    Ok(())
 }
 
 fn parse_action(s: &str) -> Result<ButtonAction, String> {

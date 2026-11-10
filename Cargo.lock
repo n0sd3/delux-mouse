@@ -125,8 +125,21 @@ name = "delux-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "delux-core",
  "delux-hid",
+ "delux-profile",
  "delux-proto",
+]
+
+[[package]]
+name = "delux-core"
+version = "0.1.0"
+dependencies = [
+ "delux-hid",
+ "delux-profile",
+ "delux-proto",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]

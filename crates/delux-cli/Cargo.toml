@@ -11,4 +11,6 @@ path = "src/main.rs"
 [dependencies]
 delux-proto = { path = "../delux-proto" }
 delux-hid = { path = "../delux-hid" }
+delux-core = { path = "../delux-core" }
+delux-profile = { path = "../delux-profile" }
 clap = { version = "4", features = ["derive"] }

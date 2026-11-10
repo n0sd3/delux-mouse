@@ -3,7 +3,7 @@
 /// Model code of the M900 PRO 8K variant handled by driver page MS_4.
 pub const MODEL_M900PRO_8K_MS4: u8 = 0x30;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum BatteryState {
     Discharging,
     Charging,

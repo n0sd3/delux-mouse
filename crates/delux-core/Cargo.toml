@@ -1,0 +1,12 @@
+[package]
+name = "delux-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+delux-proto = { path = "../delux-proto" }
+delux-hid = { path = "../delux-hid" }
+delux-profile = { path = "../delux-profile" }
+thiserror.workspace = true
+serde.workspace = true

@@ -20,6 +20,23 @@ pub fn tray_title(s: &Status) -> String {
     format!("🖱 {body}")
 }
 
+/// What the mouse has just changed about itself, compared with the previous
+/// status: (DPI stage, polling, light mode). A value that merely lingers in
+/// the status is not news and must not be acted on again.
+pub fn live_delta(
+    prev: Option<&Status>,
+    now: &Status,
+) -> (Option<u8>, Option<delux_proto::PollingRate>, Option<u8>) {
+    (
+        now.dpi_stage
+            .filter(|_| prev.is_none_or(|p| p.dpi_stage != now.dpi_stage)),
+        now.polling
+            .filter(|_| prev.is_none_or(|p| p.polling != now.polling)),
+        now.light_mode
+            .filter(|_| prev.is_none_or(|p| p.light_mode != now.light_mode)),
+    )
+}
+
 /// True when the battery has just dropped to or below `threshold` while not charging.
 pub fn should_notify_low(prev: Option<u8>, now: u8, threshold: u8, charging: bool) -> bool {
     !charging && now <= threshold && prev.is_none_or(|p| p > threshold)
@@ -56,6 +73,24 @@ mod tests {
         assert_eq!(tray_title(&st(Asleep, Some((Discharging, 84)))), "🖱 (84%)");
         assert_eq!(tray_title(&st(Asleep, None)), "🖱 zzz");
         assert_eq!(tray_title(&st(Awake, None)), "🖱 …");
+    }
+
+    #[test]
+    fn live_delta_reports_only_what_the_mouse_just_changed() {
+        use crate::Connection::Awake;
+        let mut a = st(Awake, Some((BatteryState::Discharging, 84)));
+        a.dpi_stage = Some(1);
+        // First status: everything it carries is news.
+        assert_eq!(live_delta(None, &a), (Some(1), None, None));
+        // Only the battery moved: the old stage must NOT be reported again,
+        // or it would overwrite a stage the user has since picked in the app.
+        let mut b = a.clone();
+        b.battery = Some((BatteryState::Discharging, 83));
+        assert_eq!(live_delta(Some(&a), &b), (None, None, None));
+        let mut c = b.clone();
+        c.dpi_stage = Some(2);
+        c.light_mode = Some(3);
+        assert_eq!(live_delta(Some(&b), &c), (Some(2), None, Some(3)));
     }
 
     #[test]

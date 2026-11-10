@@ -175,7 +175,8 @@ impl Controller {
     }
 
     /// Validate and store an edited profile (matched by name). Sends nothing.
-    pub fn save_profile(&self, profile: Profile) -> Result<(), Vec<String>> {
+    pub fn save_profile(&self, mut profile: Profile) -> Result<(), Vec<String>> {
+        profile.sync_light_to_stage();
         profile.validate()?;
         let mut store = self.store.lock().unwrap();
         let slot = store
@@ -394,6 +395,8 @@ impl Controller {
         };
         if let Some(p) = store.profiles.iter_mut().find(|p| p.name == active) {
             set(p);
+            // May change the light colour, which the mouse then still needs.
+            p.sync_light_to_stage();
         }
         // Only where the mouse was already in step with the profile; a
         // different last-applied profile keeps its own values.
@@ -693,6 +696,37 @@ mod tests {
             vec![Section::Sensor],
             "DPI edit still pending"
         );
+    }
+
+    #[test]
+    fn light_can_follow_the_current_dpi_stage_colour() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        let mut p = f.c.store().active_profile().clone();
+        p.light_follows_dpi = true;
+        assert_eq!(f.c.update_profile(p), Ok(vec![Section::PowerLight]));
+        let p = f.c.store().active_profile().clone();
+        assert_eq!(
+            p.power_light.color, p.sensor.stages[2].color,
+            "stage 3 is current"
+        );
+
+        // DPI button pressed on the mouse → light colour follows, and that is
+        // something the mouse still has to be told.
+        assert!(f.c.note_live(Some(5), None, None));
+        let p = f.c.store().active_profile().clone();
+        assert_eq!(p.power_light.color, p.sensor.stages[4].color);
+        assert_eq!(f.c.pending_sections("Padrão"), vec![Section::PowerLight]);
+    }
+
+    #[test]
+    fn without_the_option_the_light_colour_is_left_alone() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        let before = f.c.store().active_profile().power_light.color;
+        f.c.note_live(Some(5), None, None);
+        assert_eq!(f.c.store().active_profile().power_light.color, before);
+        assert!(f.c.pending_sections("Padrão").is_empty());
     }
 
     #[test]

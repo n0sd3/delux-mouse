@@ -293,7 +293,25 @@ impl DeviceService {
             };
             packets.push((s, frames(&inner).map_err(invalid)?));
         }
-        self.send(packets)
+        let asked: Vec<Section> = packets.iter().map(|(s, _)| *s).collect();
+        let result = self.send(packets);
+        // What reached the mouse is now its state; remember it so later
+        // reports from the mouse are compared against the truth.
+        let sent = match &result {
+            Ok(()) => asked,
+            Err(ApplyError::Io { sent, .. }) => sent.clone(),
+            Err(_) => Vec::new(),
+        };
+        let mut seen = self.inner.seen.lock().unwrap();
+        for s in sent {
+            match s {
+                Section::Sensor => seen.dpi_stage = Some(profile.sensor.current_stage),
+                Section::Polling => seen.polling = Some(profile.polling),
+                Section::PowerLight => seen.light_mode = Some(profile.power_light.light_mode),
+                Section::Buttons => {}
+            }
+        }
+        result
     }
 
     /// Restore factory settings. The firmware's reset command (0x0C) changes
@@ -587,6 +605,30 @@ mod tests {
             Some((BatteryState::Discharging, 83)),
             "settled"
         );
+    }
+
+    #[test]
+    fn what_the_app_sends_becomes_the_known_live_state() {
+        // Otherwise an old "stage 2" event would linger and a later press
+        // back to stage 2 would look like no change at all.
+        let (world, svc) = setup();
+        feed(
+            &world,
+            &svc,
+            Event {
+                model: 0x30,
+                kind: EventKind::DpiStage(2),
+            },
+        );
+        let mut p = Profile::default_named("t");
+        p.sensor.current_stage = 4;
+        p.polling = delux_proto::PollingRate::Hz500;
+        p.power_light.light_mode = 2;
+        assert_eq!(svc.apply(&p, &Section::ALL), Ok(()));
+        let s = svc.status();
+        assert_eq!(s.dpi_stage, Some(4));
+        assert_eq!(s.polling, Some(delux_proto::PollingRate::Hz500));
+        assert_eq!(s.light_mode, Some(2));
     }
 
     #[test]

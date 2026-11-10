@@ -34,6 +34,9 @@ pub struct Profile {
     pub buttons: ButtonMap,
     #[serde(default)]
     pub scripts: Vec<ScriptBinding>,
+    /// Keep the light colour equal to the current DPI stage's colour.
+    #[serde(default)]
+    pub light_follows_dpi: bool,
 }
 
 impl Profile {
@@ -45,6 +48,19 @@ impl Profile {
             power_light: PowerLightConfig::default_profile(),
             buttons: ButtonMap::factory(),
             scripts: Vec::new(),
+            light_follows_dpi: false,
+        }
+    }
+
+    /// Apply derived settings: with `light_follows_dpi`, the light colour is
+    /// the current stage's colour.
+    pub fn sync_light_to_stage(&mut self) {
+        if !self.light_follows_dpi {
+            return;
+        }
+        let idx = (self.sensor.current_stage as usize).wrapping_sub(1);
+        if let Some(stage) = self.sensor.stages.get(idx) {
+            self.power_light.color = stage.color;
         }
     }
 

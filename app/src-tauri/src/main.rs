@@ -9,7 +9,7 @@ mod tray;
 use std::sync::{Arc, Mutex};
 
 use delux_core::controller::Controller;
-use delux_core::present::should_notify_low;
+use delux_core::present::{live_delta, should_notify_low};
 use delux_core::scripts::ScriptRunner;
 use delux_core::{ApplyError, Connection, DeviceService, Status};
 use delux_proto::BatteryState;
@@ -24,9 +24,26 @@ pub struct Ctx {
     pub runner: ScriptRunner,
     /// Last live battery percentage, for the low-battery crossing.
     last_pct: Mutex<Option<u8>>,
+    /// Previous status, to tell what the mouse has just changed.
+    last_status: Mutex<Option<Status>>,
+}
+
+/// Menu-bar only by default; a regular app (Dock icon, Cmd+Tab) while the
+/// settings window is open.
+fn set_dock_visible(app: &AppHandle, visible: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let policy = if visible {
+            tauri::ActivationPolicy::Regular
+        } else {
+            tauri::ActivationPolicy::Accessory
+        };
+        let _ = app.set_activation_policy(policy);
+    }
 }
 
 pub fn show_window(app: &AppHandle) {
+    set_dock_visible(app, true);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
@@ -82,6 +99,24 @@ fn on_status(app: &AppHandle, status: &Status) {
     let Some(ctx) = app.try_state::<Ctx>() else {
         return;
     };
+    // The mouse changed something itself (DPI button, etc.): mirror it.
+    let (stage, polling, light) = {
+        let mut prev = ctx.last_status.lock().unwrap();
+        let delta = live_delta(prev.as_ref(), status);
+        *prev = Some(status.clone());
+        delta
+    };
+    if ctx.controller.note_live(stage, polling, light) {
+        let _ = app.emit("store-changed", ());
+        // Mirroring can leave something to send (light colour following the
+        // DPI stage). Not from this thread: it is the one reading the mouse.
+        let app = app.clone();
+        std::thread::spawn(move || {
+            if app.state::<Ctx>().controller.apply_pending().is_ok() {
+                let _ = app.emit("store-changed", ());
+            }
+        });
+    }
     if status.connection != Connection::Awake {
         return;
     }
@@ -140,6 +175,7 @@ fn main() {
                 svc,
                 runner: ScriptRunner::default(),
                 last_pct: Mutex::new(None),
+                last_status: Mutex::new(None),
             });
             tray::create(&handle)?;
             // Edits made while the mouse slept are sent as soon as it is awake.
@@ -171,6 +207,7 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();
+                set_dock_visible(window.app_handle(), false);
             }
         })
         .invoke_handler(tauri::generate_handler![

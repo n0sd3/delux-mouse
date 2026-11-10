@@ -262,12 +262,12 @@ function scriptsTab() {
 
 function lightTab() {
   const d = draft.power_light;
-  const color = el("input", { type: "color", value: hex(d.color) });
+  const color = el("input", { type: "color", value: hex(d.color), disabled: draft.light_follows_dpi });
   color.onchange = () => { d.color = rgb(color.value); changed(); };
   return el("div", {},
     el("h2", { textContent: "Luz" }),
     row("Modo", select(LIGHT_MODES.map((l, i) => [i, l]), d.light_mode, (v) => (d.light_mode = v))),
-    row("Cor", color),
+    row("Cor", color, el("label", {}, check(draft.light_follows_dpi, (v) => (draft.light_follows_dpi = v)), " acompanhar a cor do estágio de DPI atual")),
     row("Brilho (1–8)", num(d.brightness, 1, 8, 1, (v) => (d.brightness = v)), el("span", { className: "muted", textContent: "vale para os modos Estática e Modo 9" })),
     row("Velocidade (4–8)", num(d.breath_speed, 4, 8, 1, (v) => (d.breath_speed = v))),
     row("Apagar luz após (min)", num(d.light_off_min, 1, 60, 1, (v) => (d.light_off_min = v))));

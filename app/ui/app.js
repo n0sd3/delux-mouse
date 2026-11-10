@@ -18,19 +18,61 @@ let pushing = false;   // an edit is on its way to the mouse
 
 const POLLING = [["Hz125", "125 Hz"], ["Hz250", "250 Hz"], ["Hz500", "500 Hz"], ["Hz1000", "1000 Hz"],
   ["Hz2000", "2000 Hz"], ["Hz4000", "4000 Hz"], ["Hz8000", "8000 Hz"]];
-const LIGHT_MODES = ["Desligada", "Estática", "Respiração", "Neon", "Modo 4", "Modo 5", "Modo 6",
-  "Modo 7", "Modo 8", "Modo 9", "Modo 10", "Modo 11"];
-// Firmware functions offered for a button. Keyboard shortcuts use Cmd (HID modifier 0x08).
-const ACTIONS = [
-  ["Clique esquerdo", "Left"], ["Clique direito", "Right"], ["Clique do meio", "Middle"],
-  ["Voltar", "Back"], ["Avançar", "Forward"], ["Duplo clique", "DoubleClick"],
-  ["Trocar DPI", "DpiCycle"], ["DPI +", "DpiUp"], ["DPI −", "DpiDown"],
-  ["Tocar/Pausar", { Media: 0x18 }], ["Próxima faixa", { Media: 0x17 }], ["Faixa anterior", { Media: 0x16 }],
-  ["Volume +", { Media: 0x1b }], ["Volume −", { Media: 0x1c }], ["Mudo", { Media: 0x1a }],
-  ["Copiar (⌘C)", { Key: { modifiers: 8, usage: 0x06 } }], ["Colar (⌘V)", { Key: { modifiers: 8, usage: 0x19 } }],
-  ["Recortar (⌘X)", { Key: { modifiers: 8, usage: 0x1b } }], ["Desfazer (⌘Z)", { Key: { modifiers: 8, usage: 0x1d } }],
-  ["Desativado", "Disabled"],
+// Names from the vendor driver's language file (ms_lightmode1..12).
+const LIGHT_MODES = ["Desligada", "Estática", "Respiração", "Neon", "Respiração colorida", "Estática colorida",
+  "Respiração mista", "Onda arco-íris", "Relâmpago", "Estática mista", "Letreiro", "Letreiro 2"];
+
+// Firmware functions offered for a button, grouped as in the vendor driver.
+// Keyboard shortcuts are the Mac ones (Cmd = HID modifier 0x08, Ctrl 0x01, Shift 0x02, Alt 0x04).
+const key = (modifiers, usage) => ({ Key: { modifiers, usage } });
+const ACTION_GROUPS = [
+  ["Mouse", [
+    ["Clique esquerdo", "Left"], ["Clique direito", "Right"], ["Clique do meio", "Middle"],
+    ["Voltar", "Back"], ["Avançar", "Forward"], ["Duplo clique", "DoubleClick"],
+    ["Fogo (clique repetido)", "Fire"], ["Mira (DPI baixo enquanto segura)", { Raw: [0x10, 0, 3] }],
+    ["Scroll para cima", "ScrollUp"], ["Scroll para baixo", "ScrollDown"],
+    ["Scroll para a esquerda", { Raw: [0x0b, 0, 0] }], ["Scroll para a direita", { Raw: [0x0c, 0, 0] }],
+    ["Desativado", "Disabled"],
+  ]],
+  ["DPI e luz", [
+    ["Trocar DPI", "DpiCycle"], ["DPI +", "DpiUp"], ["DPI −", "DpiDown"], ["Trocar modo de luz", { Raw: [0x29, 0, 3] }],
+  ]],
+  ["Mídia", [
+    ["Tocar/Pausar", { Media: 0x18 }], ["Parar", { Media: 0x19 }], ["Próxima faixa", { Media: 0x17 }],
+    ["Faixa anterior", { Media: 0x16 }], ["Volume +", { Media: 0x1b }], ["Volume −", { Media: 0x1c }], ["Mudo", { Media: 0x1a }],
+  ]],
+  ["Navegador", [
+    ["Página inicial", { Media: 0x25 }], ["Avançar página", { Media: 0x20 }], ["Voltar página", { Media: 0x21 }],
+    ["Parar carregamento", { Media: 0x22 }], ["Recarregar", { Media: 0x24 }], ["Buscar", { Media: 0x26 }],
+  ]],
+  ["Atalhos do Mac", [
+    ["Copiar (⌘C)", key(8, 0x06)], ["Colar (⌘V)", key(8, 0x19)], ["Recortar (⌘X)", key(8, 0x1b)],
+    ["Desfazer (⌘Z)", key(8, 0x1d)], ["Refazer (⇧⌘Z)", key(0x0a, 0x1d)], ["Selecionar tudo (⌘A)", key(8, 0x04)],
+    ["Salvar (⌘S)", key(8, 0x16)], ["Buscar (⌘F)", key(8, 0x09)], ["Fechar janela (⌘W)", key(8, 0x1a)],
+    ["Trocar de app (⌘Tab)", key(8, 0x2b)], ["Spotlight (⌘Espaço)", key(8, 0x2c)],
+    ["Mission Control (⌃↑)", key(1, 0x52)], ["Captura de tela (⇧⌘4)", key(0x0a, 0x21)], ["Bloquear tela (⌃⌘Q)", key(9, 0x14)],
+  ]],
 ];
+
+// KeyboardEvent.code → HID keyboard usage, for the "record a shortcut" button.
+const HID_USAGE = (() => {
+  const m = {};
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").forEach((c, i) => (m["Key" + c] = 0x04 + i));
+  "1234567890".split("").forEach((c, i) => (m["Digit" + c] = 0x1e + i));
+  for (let i = 1; i <= 12; i++) m["F" + i] = 0x39 + i;
+  Object.assign(m, { Enter: 0x28, Escape: 0x29, Backspace: 0x2a, Tab: 0x2b, Space: 0x2c, Minus: 0x2d, Equal: 0x2e,
+    BracketLeft: 0x2f, BracketRight: 0x30, Backslash: 0x31, Semicolon: 0x33, Quote: 0x34, Backquote: 0x35, Comma: 0x36,
+    Period: 0x37, Slash: 0x38, Home: 0x4a, PageUp: 0x4b, Delete: 0x4c, End: 0x4d, PageDown: 0x4e,
+    ArrowRight: 0x4f, ArrowLeft: 0x50, ArrowDown: 0x51, ArrowUp: 0x52 });
+  return m;
+})();
+const USAGE_NAME = Object.fromEntries(Object.entries(HID_USAGE).map(([code, u]) => [u, code.replace(/^Key|^Digit/, "").replace("Arrow", "Seta ")]));
+function describeKey({ modifiers, usage }) {
+  const mods = [[1, "⌃"], [4, "⌥"], [2, "⇧"], [8, "⌘"], [0x10, "⌃"], [0x40, "⌥"], [0x20, "⇧"], [0x80, "⌘"]]
+    .filter(([bit]) => modifiers & bit).map(([, sym]) => sym);
+  return [...new Set(mods)].join("") + (USAGE_NAME[usage] ?? `tecla 0x${usage.toString(16)}`);
+}
+
 const SCRIPT_SLOTS = [3, 6, 7]; // physical buttons a script may take on this mouse
 let scriptDraft = {};   // slot -> { label, command } typed but not yet saved
 
@@ -201,21 +243,60 @@ function sensorTab() {
     row("Motion sync", check(d.motion_sync, (v) => (d.motion_sync = v)), unverified("motion_sync")));
 }
 
+function actionSelect(cur, onchange) {
+  const sel = el("select");
+  let found = false;
+  for (const [group, items] of ACTION_GROUPS) {
+    const og = el("optgroup", { label: group });
+    for (const [label, v] of items) {
+      const hit = same(v, cur);
+      found ||= hit;
+      og.append(el("option", { value: JSON.stringify(v), textContent: label, selected: hit }));
+    }
+    sel.append(og);
+  }
+  if (!found) {
+    const label = cur?.Key ? `Atalho: ${describeKey(cur.Key)}` : "Outro (mantido)";
+    sel.prepend(el("option", { value: JSON.stringify(cur), textContent: label, selected: true }));
+  }
+  sel.onchange = () => { onchange(JSON.parse(sel.value)); changed(); };
+  return sel;
+}
+
+// "Gravar atalho": the next key combination pressed becomes the button's function.
+function recordButton(onrecorded) {
+  const b = el("button", { textContent: "Gravar atalho…" });
+  b.onclick = () => {
+    b.textContent = "Pressione o atalho (Esc cancela)";
+    const onkey = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (["Meta", "Control", "Shift", "Alt"].includes(e.key)) return; // wait for the real key
+      window.removeEventListener("keydown", onkey, true);
+      const usage = HID_USAGE[e.code];
+      if (e.code === "Escape" || usage === undefined) return render();
+      const modifiers = (e.ctrlKey ? 1 : 0) | (e.shiftKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+      onrecorded({ Key: { modifiers, usage } });
+      changed();
+    };
+    window.addEventListener("keydown", onkey, true);
+  };
+  return b;
+}
+
 function buttonsTab() {
   const box = el("div", {}, el("h2", { textContent: "Função de cada botão (gravada no mouse)" }));
   state.slot_names.forEach((name, slot) => {
     if (!name || slot >= 16) return;
     const script = draft.scripts.find((s) => s.slot === slot);
-    let control;
-    if (slot === 0) control = el("span", { className: "muted", textContent: "Clique esquerdo (fixo, por segurança)" });
-    else if (script) control = el("span", { className: "muted", textContent: `Script: ${script.label || script.command} — altere na aba Scripts` });
+    const kids = [];
+    if (slot === 0) kids.push(el("span", { className: "muted", textContent: "Clique esquerdo (fixo, por segurança)" }));
+    else if (script) kids.push(el("span", { className: "muted", textContent: `Script: ${script.label || script.command} — altere na aba Scripts` }));
     else {
-      const cur = draft.buttons[slot];
-      const opts = ACTIONS.map(([label, v]) => [v, label]);
-      if (!opts.some(([v]) => same(v, cur))) opts.push([cur, "Outro (mantido)"]);
-      control = select(opts, cur, (v) => (draft.buttons[slot] = v));
+      kids.push(actionSelect(draft.buttons[slot], (v) => (draft.buttons[slot] = v)));
+      kids.push(recordButton((v) => (draft.buttons[slot] = v)));
     }
-    box.append(row(name, control));
+    box.append(row(name, ...kids));
   });
   return box;
 }

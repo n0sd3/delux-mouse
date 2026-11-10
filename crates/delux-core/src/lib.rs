@@ -1,6 +1,7 @@
 //! Device service: tracks what the mouse reports and guards every write.
 
 pub mod controller;
+pub mod present;
 pub mod scripts;
 
 use std::sync::{Arc, Mutex};

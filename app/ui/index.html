@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delux M900 PRO</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>Delux M900 PRO</h1>
+    <div id="conn" class="muted">…</div>
+  </div>
+  <div class="profilebar">
+    <label>Perfil
+      <select id="profile"></select>
+    </label>
+    <button id="newProfile" title="Novo perfil">＋</button>
+    <button id="delProfile" title="Apagar perfil">－</button>
+    <button id="apply" class="primary" disabled>Aplicar</button>
+  </div>
+</header>
+<div id="banners"></div>
+<main>
+  <nav>
+    <button data-tab="sensor" class="on">Sensor</button>
+    <button data-tab="buttons">Botões</button>
+    <button data-tab="scripts">Scripts</button>
+    <button data-tab="light">Luz</button>
+    <button data-tab="power">Energia</button>
+  </nav>
+  <section id="tab"></section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -104,7 +104,7 @@ function mergeScriptButtons(buttons) {
   return out;
 }
 
-const sectionNames = { Sensor: "sensor", Polling: "polling", PowerLight: "luz/energia", Buttons: "botões" };
+const sectionNames = { Sensor: "sensor", Polling: "polling", PowerLight: "luz/energia", Buttons: "botões", Macros: "macros" };
 
 function statusText(s) {
   const b = s.battery ? `${s.battery[1]}%` : "";
@@ -158,7 +158,7 @@ function renderChrome() {
 function renderTab() {
   const unsupported = state.status.model !== null && state.status.model !== 0x30;
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  const body = { sensor: sensorTab, buttons: buttonsTab, scripts: scriptsTab, light: lightTab, power: powerTab }[tab]();
+  const body = { sensor: sensorTab, buttons: buttonsTab, scripts: scriptsTab, macros: macrosTab, light: lightTab, power: powerTab }[tab]();
   body.classList.toggle("disabled-all", unsupported);
   $("#tab").replaceChildren(body);
 }
@@ -292,6 +292,7 @@ function buttonsTab() {
     const kids = [];
     if (slot === 0) kids.push(el("span", { className: "muted", textContent: "Clique esquerdo (fixo, por segurança)" }));
     else if (script) kids.push(el("span", { className: "muted", textContent: `Script: ${script.label || script.command} — altere na aba Scripts` }));
+    else if (draft.buttons[slot] === "Macro") kids.push(el("span", { className: "muted", textContent: `Macro: ${draft.macros.find((m) => m.slot === slot)?.name ?? ""} — altere na aba Macros` }));
     else {
       kids.push(actionSelect(draft.buttons[slot], (v) => (draft.buttons[slot] = v)));
       kids.push(recordButton((v) => (draft.buttons[slot] = v)));
@@ -339,6 +340,122 @@ function scriptsTab() {
       if (r.output) log.append(el("pre", { textContent: r.output + (r.truncated ? "\n[saída cortada em 64 KiB]" : "") }));
     }
   });
+  return box;
+}
+
+// ---- Macros: stored in the mouse, one per button; they work without the app.
+const FACTORY_ACTION = { 3: "DpiCycle", 6: "Forward", 7: "Back" };
+const MACRO_MAX_STEPS = 46;
+const MOD_USAGE = { ControlLeft: 0xe0, ShiftLeft: 0xe1, AltLeft: 0xe2, MetaLeft: 0xe3, ControlRight: 0xe4, ShiftRight: 0xe5, AltRight: 0xe6, MetaRight: 0xe7 };
+const MOD_NAME = { 0xe0: "⌃", 0xe1: "⇧", 0xe2: "⌥", 0xe3: "⌘", 0xe4: "⌃ dir.", 0xe5: "⇧ dir.", 0xe6: "⌥ dir.", 0xe7: "⌘ dir.",
+  0xf1: "Clique esquerdo", 0xf2: "Clique direito", 0xf3: "Clique do meio", 0xf4: "Avançar", 0xf5: "Voltar" };
+const codeName = (c) => MOD_NAME[c] ?? USAGE_NAME[c] ?? `tecla 0x${c.toString(16)}`;
+// Nearest delay the firmware can store: 10, 30, 50 … 1270 ms.
+function snapDelay(ms) {
+  const tens = Math.min(127, Math.max(1, Math.round(ms / 10)));
+  const odd = tens % 2 === 1 ? tens : ms >= tens * 10 ? tens + 1 : tens - 1;
+  return Math.min(127, Math.max(1, odd)) * 10;
+}
+let recording = null; // { slot, steps, last, down:Set }
+
+function startRecording(slot) {
+  recording = { slot, steps: [], last: performance.now(), down: new Set() };
+  const onkey = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.repeat || !recording) return;
+    const code = MOD_USAGE[e.code] ?? HID_USAGE[e.code];
+    if (code === undefined) return;
+    const isDown = e.type === "keydown";
+    if (isDown === recording.down.has(code)) return; // ignore stray repeats/releases
+    if (isDown && recording.steps.length >= MACRO_MAX_STEPS - recording.down.size - 1) return; // leave room for releases
+    const now = performance.now();
+    const prev = recording.steps[recording.steps.length - 1];
+    if (prev) prev.delay_ms = snapDelay(now - recording.last);
+    recording.last = now;
+    isDown ? recording.down.add(code) : recording.down.delete(code);
+    recording.steps.push({ down: isDown, code, delay_ms: 10 });
+    renderTab();
+  };
+  recording.stop = () => {
+    window.removeEventListener("keydown", onkey, true);
+    window.removeEventListener("keyup", onkey, true);
+  };
+  window.addEventListener("keydown", onkey, true);
+  window.addEventListener("keyup", onkey, true);
+  renderTab();
+}
+
+function stopRecording(keep) {
+  const r = recording;
+  recording = null;
+  r.stop();
+  // Never leave a key down: release whatever is still held.
+  for (const code of r.down) r.steps.push({ down: false, code, delay_ms: 10 });
+  if (keep && r.steps.length) {
+    const existing = draft.macros.find((m) => m.slot === r.slot);
+    if (existing) existing.definition.steps = r.steps;
+    else draft.macros.push({ slot: r.slot, name: "Macro", definition: { steps: r.steps, repeat: { Times: 1 } } });
+    draft.buttons[r.slot] = "Macro";
+    return changed();
+  }
+  renderTab();
+}
+
+function macrosTab() {
+  const box = el("div", {},
+    el("h2", { textContent: "Macros gravadas no mouse" }),
+    el("div", { className: "muted", textContent: "Sequência de teclas num botão, guardada no próprio mouse — funciona sem este app. Até 46 ações; pausas de 10 a 1270 ms. O botão perde a função original enquanto tiver macro." }));
+  for (const slot of SCRIPT_SLOTS) {
+    const name = state.slot_names[slot];
+    box.append(el("h2", { textContent: name }));
+    if (draft.scripts.some((s) => s.slot === slot)) {
+      box.append(el("div", { className: "muted", textContent: "Este botão tem um script. Remova o script para usar macro." }));
+      continue;
+    }
+    if (recording?.slot === slot) {
+      const stop = el("button", { className: "primary", textContent: "Parar e salvar" });
+      stop.onclick = () => stopRecording(true);
+      const cancel = el("button", { textContent: "Cancelar" });
+      cancel.onclick = () => stopRecording(false);
+      box.append(row("Gravando…", stop, cancel),
+        el("div", { textContent: recording.steps.map((s) => (s.down ? "↓" : "↑") + codeName(s.code)).join("  ") || "pressione as teclas da macro" }));
+      continue;
+    }
+    const m = draft.macros.find((x) => x.slot === slot);
+    const rec = el("button", { textContent: m ? "Regravar…" : "Gravar macro…", disabled: !!recording });
+    rec.onclick = () => startRecording(slot);
+    if (!m) { box.append(row("", rec)); continue; }
+
+    const nameInput = el("input", { type: "text", value: m.name });
+    nameInput.onchange = () => { m.name = nameInput.value || "Macro"; changed(); };
+    const rm = el("button", { className: "danger", textContent: "Remover macro" });
+    rm.onclick = () => {
+      draft.macros = draft.macros.filter((x) => x.slot !== slot);
+      draft.buttons[slot] = FACTORY_ACTION[slot] ?? "Disabled";
+      changed();
+    };
+    box.append(row("Nome", el("div", { className: "grow" }, nameInput), rec, rm));
+
+    const rep = m.definition.repeat;
+    const mode = typeof rep === "string" ? rep : "Times";
+    const modeSel = select([["Times", "Tocar N vezes"], ["WhileHeld", "Repetir enquanto segura o botão"], ["UntilKeyPressed", "Repetir até apertar qualquer tecla"]], mode,
+      (v) => (m.definition.repeat = v === "Times" ? { Times: 1 } : v));
+    const kids = [modeSel];
+    if (mode === "Times") kids.push(num(rep.Times, 1, 255, 1, (v) => (m.definition.repeat = { Times: v })), "vez(es)");
+    box.append(row("Repetição", ...kids));
+
+    const table = el("table", {}, el("tr", {}, ...["#", "Ação", "Pausa depois (ms)"].map((t) => el("th", { textContent: t }))));
+    m.definition.steps.forEach((st, i) => {
+      const d = el("input", { type: "number", value: st.delay_ms, min: 10, max: 1270, step: 20 });
+      d.onchange = () => { st.delay_ms = snapDelay(Number(d.value) || 10); changed(); };
+      table.append(el("tr", {},
+        el("td", { textContent: `${i + 1}` }),
+        el("td", { textContent: `${st.down ? "↓ pressiona" : "↑ solta"} ${codeName(st.code)}` }),
+        el("td", {}, d)));
+    });
+    box.append(table);
+  }
   return box;
 }
 

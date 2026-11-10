@@ -285,3 +285,14 @@ Fonte: segunda análise estática do driver (relatório completo em `.re/readbac
 - Evento `0x70`: v0 = índice do modo de luz atual (0..7), o mesmo campo do byte 3 do cmd `0x05`.
 - Evento `0x60`: 1..10, provavelmente nível grosso de bateria (inferido). Evento `0x80`: 1..5, significado não determinado.
 - **Não existe leitura de configuração**: o driver não tem nenhum comando de consulta em nenhum transporte (sem `hid_get_feature_report`, `GetFeature` resolvido mas nunca chamado, report 4 de entrada nunca lido). O web driver da Delux (`controlhub.top`) é de outra família (Compx, VID 3554, report ID 8) e não serve para este receptor.
+
+### Verificação no hardware — 2026-11-10, segunda rodada
+
+| item | resultado |
+|---|---|
+| `0x06` polling (código one-hot) | **confirmado** por medição da taxa de relatórios via hidapi: 125 → 128 Hz, 500 → 508 Hz, 1000 → 816 Hz (pico em janela de 250 ms, com movimento contínuo). 2000/4000/8000 Hz: não mensurável pelo Mac |
+| `0x05` em MS_4 | mesmo layout de MS_21, mas: byte 9 = constante `2` (sem controle na página MS_4); sleep 1..20 min; debounce 1..25 em passos de 2 ms (o driver mostra 2 × valor) |
+| `0x05` sleep | **confirmado** com byte 9 = 2: sleep = 1 → sinais a cada 2 s até ~50 s, depois espaçados (~4 s), silêncio total a partir de ~115 s. Com byte 9 = 10 (valor antigo) o mouse não dormiu em 200 s |
+| evento `0x10` → app | **confirmado**: botão de DPI move a seleção "Atual" e o cabeçalho |
+| luz segue DPI | **confirmado**: app reenvia `0x05` com a cor do estágio ao receber `0x10` |
+| LOD, ripple, angle snap, motion sync, debounce | enviados como o driver envia; efeito não confirmado (só perceptível por sensação) |

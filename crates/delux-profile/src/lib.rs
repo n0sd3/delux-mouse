@@ -20,6 +20,9 @@ pub struct ScriptBinding {
     pub hotkey_usage: u8,
     pub command: String,
     pub label: String,
+    /// What the button did before the script took it; restored on removal.
+    #[serde(default)]
+    pub previous: Option<ButtonAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +155,7 @@ mod tests {
             hotkey_usage: 0x68,
             command: "true".into(),
             label: "x".into(),
+            previous: None,
         });
         p
     }

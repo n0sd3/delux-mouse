@@ -12,7 +12,7 @@ use delux_hid::{Device, HidError};
 use delux_profile::{Profile, Section};
 use delux_proto::{
     encode_buttons, encode_factory_reset, encode_polling, encode_power_light, encode_sensor,
-    frames, BatteryState, Event, EventKind, Frame, MODEL_M900PRO_8K_MS4,
+    frames, BatteryState, Event, EventKind, Frame, PollingRate, MODEL_M900PRO_8K_MS4,
 };
 use serde::Serialize;
 
@@ -24,6 +24,10 @@ pub const AWAKE_WINDOW_MS: u64 = 6000;
 /// reports every 2 s while awake, so 3 s without a report means it is going
 /// to sleep. There is no ack, so a command sent then would be lost silently.
 pub const WRITE_WINDOW_MS: u64 = 3000;
+
+/// Right after the charger is unplugged the reported percentage jumps around
+/// (seen on hardware: 82 → 100 → 86 → 84); hold the last value this long.
+pub const BATTERY_SETTLE_MS: u64 = 10_000;
 
 /// After each section, how long to wait for the mouse's next report as
 /// evidence that it was still listening.
@@ -80,6 +84,10 @@ pub struct Status {
     /// True when `battery` is a remembered value, not a current one.
     pub battery_is_stale: bool,
     pub dpi_stage: Option<u8>,
+    /// Polling rate the mouse last reported (it reports only its own changes).
+    pub polling: Option<PollingRate>,
+    /// Light mode index the mouse last reported.
+    pub light_mode: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -110,6 +118,10 @@ struct Seen {
     model: Option<u8>,
     battery: Option<(BatteryState, u8)>,
     dpi_stage: Option<u8>,
+    polling: Option<PollingRate>,
+    light_mode: Option<u8>,
+    /// Battery readings are held until this time (see `BATTERY_SETTLE_MS`).
+    battery_settle_until_ms: u64,
     published: Option<Status>,
 }
 
@@ -151,6 +163,8 @@ impl DeviceService {
             if !worker.poll_once() {
                 std::thread::sleep(Duration::from_secs(2));
             }
+            // Leave the link free for a moment so a waiting apply gets its turn.
+            std::thread::sleep(Duration::from_millis(10));
         });
         svc
     }
@@ -193,11 +207,28 @@ impl DeviceService {
 
     fn record(&self, ev: Event) {
         let mut seen = self.inner.seen.lock().unwrap();
-        seen.last_event_ms = Some(self.inner.clock.now_ms());
+        let now = self.inner.clock.now_ms();
+        seen.last_event_ms = Some(now);
         seen.model = Some(ev.model);
         match ev.kind {
-            EventKind::Battery { state, percent } => seen.battery = Some((state, percent)),
+            EventKind::Battery { state, percent } => {
+                let was_charging = matches!(
+                    seen.battery,
+                    Some((BatteryState::Charging | BatteryState::Full, _))
+                );
+                let discharging = state == BatteryState::Discharging;
+                if was_charging && discharging {
+                    seen.battery_settle_until_ms = now + BATTERY_SETTLE_MS;
+                }
+                let held = seen
+                    .battery
+                    .map(|(_, pct)| pct)
+                    .filter(|_| discharging && now < seen.battery_settle_until_ms);
+                seen.battery = Some((state, held.unwrap_or(percent)));
+            }
             EventKind::DpiStage(stage) => seen.dpi_stage = Some(stage),
+            EventKind::PollingRate(Some(rate)) => seen.polling = Some(rate),
+            EventKind::LightMode(mode) => seen.light_mode = Some(mode),
             _ => {}
         }
     }
@@ -233,6 +264,8 @@ impl DeviceService {
             battery: seen.battery,
             battery_is_stale: seen.battery.is_some() && connection != Connection::Awake,
             dpi_stage: seen.dpi_stage,
+            polling: seen.polling,
+            light_mode: seen.light_mode,
         }
     }
 
@@ -490,6 +523,70 @@ mod tests {
         assert_eq!(s.connection, Connection::Asleep);
         assert_eq!(s.battery, Some((BatteryState::Discharging, 84)));
         assert!(s.battery_is_stale);
+    }
+
+    #[test]
+    fn polling_and_light_mode_are_tracked_live() {
+        let (world, svc) = setup();
+        feed(
+            &world,
+            &svc,
+            Event {
+                model: 0x30,
+                kind: EventKind::PollingRate(Some(delux_proto::PollingRate::Hz8000)),
+            },
+        );
+        feed(
+            &world,
+            &svc,
+            Event {
+                model: 0x30,
+                kind: EventKind::LightMode(2),
+            },
+        );
+        let s = svc.status();
+        assert_eq!(s.polling, Some(delux_proto::PollingRate::Hz8000));
+        assert_eq!(s.light_mode, Some(2));
+        // an unknown code does not erase what we knew
+        feed(
+            &world,
+            &svc,
+            Event {
+                model: 0x30,
+                kind: EventKind::PollingRate(None),
+            },
+        );
+        assert_eq!(svc.status().polling, Some(delux_proto::PollingRate::Hz8000));
+    }
+
+    #[test]
+    fn battery_reading_is_held_steady_right_after_unplugging() {
+        // Seen on hardware: charging 82 → unplug → 100, 86, 84 within seconds.
+        let (world, svc) = setup();
+        let charging = Event {
+            model: 0x30,
+            kind: EventKind::Battery {
+                state: BatteryState::Charging,
+                percent: 82,
+            },
+        };
+        feed(&world, &svc, charging);
+        feed(&world, &svc, battery(0x30, 100));
+        assert_eq!(
+            svc.status().battery,
+            Some((BatteryState::Discharging, 82)),
+            "spike ignored"
+        );
+        world.clock.advance(2000);
+        feed(&world, &svc, battery(0x30, 86));
+        assert_eq!(svc.status().battery, Some((BatteryState::Discharging, 82)));
+        world.clock.advance(BATTERY_SETTLE_MS);
+        feed(&world, &svc, battery(0x30, 83));
+        assert_eq!(
+            svc.status().battery,
+            Some((BatteryState::Discharging, 83)),
+            "settled"
+        );
     }
 
     #[test]

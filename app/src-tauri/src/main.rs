@@ -58,6 +58,7 @@ pub fn switch_profile(app: &AppHandle, name: &str) {
         }
         if let Some(w) = ctx.controller.warning() {
             notify(&app, "Delux Mouse", &w);
+            ctx.controller.dismiss_warning();
         }
     });
 }
@@ -141,11 +142,26 @@ fn main() {
                 last_pct: Mutex::new(None),
             });
             tray::create(&handle)?;
+            // Edits made while the mouse slept are sent as soon as it is awake.
+            let retry = handle.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let ctx = retry.state::<Ctx>();
+                let active = ctx.controller.store().active;
+                let owes = !ctx.controller.pending_sections(&active).is_empty();
+                if owes
+                    && ctx.svc.status().connection == Connection::Awake
+                    && ctx.controller.apply_pending().is_ok()
+                {
+                    let _ = retry.emit("store-changed", ());
+                }
+            });
             // The poll thread may have published its first status before the tray existed.
             let ctx = handle.state::<Ctx>();
             tray::set_status(&handle, &ctx.svc.status());
             if let Some(w) = ctx.controller.warning() {
                 notify(&handle, "Delux Mouse", &w);
+                ctx.controller.dismiss_warning();
             }
             sync_autostart(&handle, autostart);
             Ok(())
@@ -160,6 +176,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
             commands::save_profile,
+            commands::update_profile,
             commands::apply_profile,
             commands::set_active_profile,
             commands::create_profile,

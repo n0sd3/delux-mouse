@@ -3,6 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,9 +61,18 @@ impl Inner {
 #[derive(Default, Clone)]
 pub struct ScriptRunner {
     inner: Arc<Mutex<Inner>>,
+    /// Overrides `$HOME` for the scripts (tests).
+    home: Option<PathBuf>,
 }
 
 impl ScriptRunner {
+    pub fn with_home(home: PathBuf) -> Self {
+        ScriptRunner {
+            home: Some(home),
+            ..Self::default()
+        }
+    }
+
     /// Start the binding's command. Returns false (and does nothing) if the
     /// same button's previous run is still going.
     pub fn trigger(&self, binding: &ScriptBinding) -> bool {
@@ -80,16 +90,23 @@ impl ScriptRunner {
             output: String::new(),
             truncated: false,
         };
-        // Login shell so the user's PATH applies; stderr joins stdout. Own
-        // process group so everything the script starts can be killed with it.
-        let spawned = Command::new("/bin/zsh")
-            .arg("-lc")
-            .arg(format!("{{ {}\n}} 2>&1", binding.command))
+        // Login shell plus ~/.zshrc (where PATH usually lives; `-l` alone
+        // skips it); stderr joins stdout. Own process group so everything
+        // the script starts can be killed with it.
+        let mut cmd = Command::new("/bin/zsh");
+        cmd.arg("-lc")
+            .arg(format!(
+                "[ -f ~/.zshrc ] && source ~/.zshrc >/dev/null 2>&1; {{ {}\n}} 2>&1",
+                binding.command
+            ))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
+            .process_group(0);
+        if let Some(home) = &self.home {
+            cmd.env("HOME", home);
+        }
+        let spawned = cmd.spawn();
         let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
@@ -106,21 +123,26 @@ impl ScriptRunner {
         inner.running.insert(slot, child.clone());
         drop(inner);
 
-        // Reader: collects output until the pipe closes, which may be long
-        // after the shell exits if it left something running in the background.
-        let captured = Arc::new(Mutex::new((Vec::new(), false)));
-        let sink = captured.clone();
+        // Reader: appends output to the run's record as it arrives, until the
+        // pipe closes — which may be long after the shell exits if it left
+        // something running in the background.
+        let shared = self.inner.clone();
         std::thread::spawn(move || {
             let Some(mut out) = stdout else { return };
             let mut buf = [0u8; 8192];
+            let mut kept = Vec::new();
             while let Ok(n) = out.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
-                let mut c = sink.lock().unwrap();
-                let room = LOG_CAP - c.0.len();
-                c.0.extend_from_slice(&buf[..n.min(room)]);
-                c.1 |= n > room;
+                let room = LOG_CAP - kept.len();
+                kept.extend_from_slice(&buf[..n.min(room)]);
+                let mut inner = shared.lock().unwrap();
+                let Some((_, rec)) = inner.log.iter_mut().find(|(i, _)| *i == id) else {
+                    return; // record aged out of the log
+                };
+                rec.output = String::from_utf8_lossy(&kept).into_owned();
+                rec.truncated |= n > room;
             }
         });
 
@@ -137,13 +159,10 @@ impl ScriptRunner {
             };
             // Let the reader drain what the shell wrote just before exiting.
             std::thread::sleep(Duration::from_millis(100));
-            let (kept, truncated) = captured.lock().unwrap().clone();
             let mut inner = shared.lock().unwrap();
             inner.running.remove(&slot);
             if let Some((_, rec)) = inner.log.iter_mut().find(|(i, _)| *i == id) {
                 rec.exit = Some(exit);
-                rec.output = String::from_utf8_lossy(&kept).into_owned();
-                rec.truncated = truncated;
             }
         });
         true
@@ -181,7 +200,7 @@ impl ScriptRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     fn binding(slot: usize, command: &str) -> ScriptBinding {
         ScriptBinding {
@@ -189,6 +208,7 @@ mod tests {
             hotkey_usage: 0x68,
             command: command.into(),
             label: format!("s{slot}"),
+            previous: None,
         }
     }
 
@@ -282,6 +302,37 @@ mod tests {
         assert_eq!(usage_for_slot(14), Some(0x73));
         assert_eq!(usage_for_slot(2), None);
         assert_eq!(usage_for_slot(15), None);
+    }
+
+    #[test]
+    fn output_is_visible_while_the_script_is_still_running() {
+        let r = ScriptRunner::default();
+        assert!(r.trigger(&binding(7, "echo early; sleep 30")));
+        let start = Instant::now();
+        loop {
+            let rec = r.log().into_iter().next().unwrap();
+            if rec.output.contains("early") {
+                assert_eq!(rec.exit, None, "still running");
+                break;
+            }
+            assert!(start.elapsed() < Duration::from_secs(10), "no live output");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        r.kill_all();
+    }
+
+    #[test]
+    fn zshrc_is_loaded() {
+        // PATH and friends usually live in ~/.zshrc, which `zsh -lc` skips.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(".zshrc"),
+            "export DELUX_TEST_VAR=from_zshrc\n",
+        )
+        .unwrap();
+        let r = ScriptRunner::with_home(home.path().to_path_buf());
+        assert!(r.trigger(&binding(7, "echo $DELUX_TEST_VAR")));
+        assert_eq!(wait_done(&r).output, "from_zshrc\n");
     }
 
     #[test]

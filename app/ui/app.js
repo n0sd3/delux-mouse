@@ -12,7 +12,9 @@ const el = (tag, props = {}, ...kids) => {
 let state = null;      // last UiState from Rust
 let draft = null;      // edited copy of the active profile
 let tab = "sensor";
-let message = null;    // { text, err } shown until the next action
+let note = null;       // { text, err } last outcome, shown in the header line
+let pushTimer = null;  // debounce for sending edits
+let pushing = false;   // an edit is on its way to the mouse
 
 const POLLING = [["Hz125", "125 Hz"], ["Hz250", "250 Hz"], ["Hz500", "500 Hz"], ["Hz1000", "1000 Hz"],
   ["Hz2000", "2000 Hz"], ["Hz4000", "4000 Hz"], ["Hz8000", "8000 Hz"]];
@@ -34,16 +36,16 @@ let scriptDraft = {};   // slot -> { label, command } typed but not yet saved
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const active = () => state.store.profiles.find((p) => p.name === state.store.active);
-const dirty = () => !same(draft, active());
 const unverified = (key) => state.unverified.includes(key)
   ? el("span", { className: "badge", textContent: "não verificado", title: "Enviado ao mouse sem erro, mas o efeito não foi confirmado nos testes." })
   : "";
 const hex = ([r, g, b]) => "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
 const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
 
-async function refresh(keepDraft = false) {
+async function refresh() {
   state = await invoke("get_state");
-  if (!keepDraft || !draft || draft.name !== state.store.active) draft = structuredClone(active());
+  // The working copy follows the store, except while an edit is being typed or sent.
+  if (!draft || draft.name !== state.store.active || (!pushTimer && !pushing)) draft = structuredClone(active());
   else draft.scripts = structuredClone(active().scripts), draft.buttons = mergeScriptButtons(draft.buttons);
   render();
 }
@@ -60,6 +62,8 @@ function mergeScriptButtons(buttons) {
   return out;
 }
 
+const sectionNames = { Sensor: "sensor", Polling: "polling", PowerLight: "luz/energia", Buttons: "botões" };
+
 function statusText(s) {
   const b = s.battery ? `${s.battery[1]}%` : "";
   if (s.connection === "NoReceiver") return "Receptor não conectado";
@@ -75,31 +79,38 @@ function render() {
   renderTab();
 }
 
-// Header, banners and Apply button. Safe to call on every status event:
-// it never touches the tab, so nothing the user is typing is lost.
+// Header only. Safe to call on every status event: it never touches the tab,
+// so nothing the user is typing is lost.
 function renderChrome() {
   const s = state.status;
-  $("#conn").textContent = statusText(s);
+  const unsupported = s.model !== null && s.model !== 0x30;
+  let text = statusText(s);
+  let warn = false;
+  if (unsupported) {
+    text = `Modelo de mouse 0x${s.model.toString(16)} não suportado — bateria é mostrada, ajustes não são enviados`;
+    warn = true;
+  } else if (note?.err) {
+    text += ` — ${note.text}`;
+    warn = true;
+  } else if (pushing) {
+    text += " — enviando…";
+  } else if (state.pending.length) {
+    const what = state.pending.map((p) => sectionNames[p] ?? p).join(", ");
+    text += ` — aguardando o mouse para enviar: ${what}`;
+  }
+  $("#conn").textContent = text;
+  $("#conn").classList.toggle("warn", warn);
+
+  // What is on the mouse right now. The stage, polling and light mode come
+  // from the mouse when it changes them itself, otherwise from what was last sent.
+  const p = active();
+  const stage = p.sensor.stages[p.sensor.current_stage - 1];
+  const bits = [`DPI ${stage.dpi} (estágio ${p.sensor.current_stage})`, `${p.polling.replace("Hz", "")} Hz`, `luz: ${LIGHT_MODES[p.power_light.light_mode] ?? "?"}`];
+  $("#live").textContent = state.store.last_applied ? bits.join(" · ") : "";
+
   const sel = $("#profile");
   sel.replaceChildren(...state.store.profiles.map((p) => el("option", { value: p.name, textContent: p.name, selected: p.name === state.store.active })));
   $("#delProfile").disabled = state.store.profiles.length < 2;
-
-  const unsupported = s.model !== null && s.model !== 0x30;
-  const pending = state.pending.length > 0;
-  $("#apply").disabled = unsupported || !(dirty() || pending);
-  $("#apply").textContent = dirty() ? "Aplicar" : pending ? "Aplicar pendências" : "Aplicado";
-
-  const banners = [];
-  if (state.load_warning) {
-    const ok = el("button", { textContent: "Entendi" });
-    ok.onclick = () => invoke("dismiss_warning").then(() => refresh(true));
-    banners.push(el("div", { className: "banner err" }, state.load_warning, ok));
-  }
-  if (unsupported) banners.push(el("div", { className: "banner err", textContent: `Este modelo de mouse (0x${s.model.toString(16)}) não é suportado. A bateria é mostrada, mas nenhum ajuste será enviado.` }));
-  if (!state.store.last_applied) banners.push(el("div", { className: "banner", textContent: "Os valores mostrados são do perfil, não do mouse — o mouse não informa sua configuração. Aplicar substitui o que está no mouse; ajuste DPI e polling antes se quiser manter os seus." }));
-  else if (pending && !dirty()) banners.push(el("div", { className: "banner", textContent: "Há ajustes deste perfil que ainda não chegaram ao mouse. Mexa o mouse e clique em Aplicar pendências." }));
-  if (message) banners.push(el("div", { className: "banner" + (message.err ? " err" : ""), textContent: message.text }));
-  $("#banners").replaceChildren(...banners);
 }
 
 function renderTab() {
@@ -110,7 +121,31 @@ function renderTab() {
   $("#tab").replaceChildren(body);
 }
 
-const changed = () => { message = null; render(); };
+// Every edit goes to the mouse by itself, shortly after the last change.
+function changed() {
+  note = null;
+  render();
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(push, 500);
+}
+
+async function push() {
+  pushTimer = null;
+  if (pushing) return (pushTimer = setTimeout(push, 200));
+  pushing = true;
+  renderChrome();
+  const sentCopy = structuredClone(draft);
+  try {
+    await invoke("update_profile", { profile: sentCopy });
+    note = null;
+  } catch (e) {
+    // "asleep"/"no_receiver": the edit is saved and goes out when the mouse is back;
+    // the header shows it as waiting. Anything else is worth showing.
+    note = ["asleep", "no_receiver"].includes(e?.kind) ? null : { text: e?.message ?? String(e), err: true };
+  }
+  pushing = false;
+  await refresh();
+}
 
 function num(value, min, max, step, onchange) {
   const i = el("input", { type: "number", value, min, max, step });
@@ -142,7 +177,7 @@ function sensorTab() {
     cur.onchange = () => { d.current_stage = i + 1; changed(); };
     const color = el("input", { type: "color", value: hex(st.color) });
     color.onchange = () => { st.color = rgb(color.value); changed(); };
-    table.append(el("tr", {},
+    table.append(el("tr", { className: st.enabled ? "" : "off" },
       el("td", { textContent: `${i + 1}` }),
       el("td", {}, check(st.enabled, (v) => {
         // At least one stage must stay on.
@@ -154,7 +189,7 @@ function sensorTab() {
       el("td", {}, color),
       el("td", {}, cur)));
   });
-  const live = state.status.dpi_stage ? el("div", { className: "muted", textContent: `Estágio em uso no mouse agora: ${state.status.dpi_stage}` }) : "";
+  const live = "";
   return el("div", {},
     el("h2", { textContent: "Estágios de DPI" }), table, live,
     el("h2", { textContent: "Sensor" }),
@@ -263,37 +298,22 @@ function powerTab() {
     row("", reset));
 }
 
-// Run a command, show its outcome, reload state.
-async function act(fn, okText) {
+// Run a command, show a failure in the header, reload state.
+async function act(fn) {
   try {
     await fn();
-    message = okText ? { text: okText } : null;
+    note = null;
   } catch (e) {
     const text = Array.isArray(e) ? e.join("; ") : e?.message ?? String(e);
-    message = { text, err: true };
+    note = ["asleep", "no_receiver"].includes(e?.kind) ? null : { text, err: true };
   }
-  await refresh(true);
+  await refresh();
 }
 
-$("#apply").onclick = async () => {
-  $("#apply").disabled = true;
-  $("#apply").textContent = "Enviando…";
-  try {
-    if (dirty()) await invoke("save_profile", { profile: draft });
-    const sent = await invoke("apply_profile", { name: state.store.active });
-    message = { text: sent.length ? "Aplicado ao mouse." : "Nada a enviar." };
-    await refresh();
-  } catch (e) {
-    const text = Array.isArray(e) ? e.join("; ") : e?.message ?? String(e);
-    message = { text, err: true };
-    await refresh(true);
-  }
-};
 $("#profile").onchange = (e) => {
-  if (dirty() && !confirm("Descartar as mudanças não aplicadas deste perfil?")) return render();
   scriptDraft = {};
   const name = e.target.value;
-  act(() => invoke("set_active_profile", { name })).then(() => refresh());
+  act(() => invoke("set_active_profile", { name }));
 };
 $("#newProfile").onclick = () => {
   const name = prompt("Nome do novo perfil:");
@@ -315,6 +335,6 @@ listen("status", (e) => {
   // Only the Sensor tab shows live status, and it holds no free-text fields.
   if (modelChanged || (stageChanged && tab === "sensor")) renderTab();
 });
-listen("store-changed", () => { scriptDraft = {}; refresh(); });
+listen("store-changed", () => refresh());
 listen("script-run", () => { if (tab === "scripts") setTimeout(renderTab, 600); });
 refresh();

@@ -38,6 +38,8 @@ mod tests {
             battery,
             battery_is_stale: battery.is_some() && connection != Connection::Awake,
             dpi_stage: None,
+            polling: None,
+            light_mode: None,
         }
     }
 

@@ -117,9 +117,19 @@ pub fn load(path: &Path) -> LoadOutcome {
             warning: None,
         },
         Err(reason) => {
-            let mut bad = path.as_os_str().to_owned();
-            bad.push(".bad");
-            let bad = PathBuf::from(bad);
+            // First free name: profiles.toml.bad, .bad.1, .bad.2, …
+            let bad = (0..)
+                .map(|n| {
+                    let mut name = path.as_os_str().to_owned();
+                    name.push(if n == 0 {
+                        ".bad".to_string()
+                    } else {
+                        format!(".bad.{n}")
+                    });
+                    PathBuf::from(name)
+                })
+                .find(|candidate| !candidate.exists())
+                .expect("unbounded range");
             let kept = std::fs::rename(path, &bad).is_ok();
             let warning = if kept {
                 format!(
@@ -200,6 +210,25 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("profiles.toml.bad")).unwrap(),
             "{{{"
+        );
+    }
+
+    #[test]
+    fn a_second_bad_file_does_not_overwrite_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.toml");
+        std::fs::write(&path, "first {{{").unwrap();
+        load(&path);
+        std::fs::write(&path, "second {{{").unwrap();
+        let out = load(&path);
+        assert!(out.warning.unwrap().contains("profiles.toml.bad.1"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("profiles.toml.bad")).unwrap(),
+            "first {{{"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("profiles.toml.bad.1")).unwrap(),
+            "second {{{"
         );
     }
 

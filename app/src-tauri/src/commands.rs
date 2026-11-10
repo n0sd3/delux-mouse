@@ -104,6 +104,12 @@ pub fn save_profile(ctx: State<Ctx>, profile: Profile) -> Result<(), Vec<String>
     ctx.controller.save_profile(profile)
 }
 
+/// Save an edit and send it to the mouse right away (there is no Apply button).
+#[tauri::command(async)]
+pub fn update_profile(ctx: State<Ctx>, profile: Profile) -> Result<Vec<Section>, ApplyFailure> {
+    Ok(ctx.controller.update_profile(profile)?)
+}
+
 #[tauri::command(async)]
 pub fn apply_profile(ctx: State<Ctx>, name: String) -> Result<Vec<Section>, ApplyFailure> {
     Ok(ctx.controller.apply_profile(&name)?)

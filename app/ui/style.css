@@ -45,3 +45,7 @@ th { font-weight: 600; color: var(--muted); font-size: 12px; }
 pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 4px 0 10px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: auto; font: 11px Menlo, monospace; }
 .ok { color: var(--ok); }
 .disabled-all { opacity: .5; pointer-events: none; }
+tr.off td { opacity: .4; }
+tr.off td:nth-child(2) { opacity: 1; }
+#live { margin-top: 2px; }
+#conn.warn { color: #c0392b; }

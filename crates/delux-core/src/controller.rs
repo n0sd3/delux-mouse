@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use delux_profile::{changed_sections, Profile, ScriptBinding, Section, Settings, Store};
-use delux_proto::{ButtonAction, ButtonMap};
+use delux_proto::{ButtonAction, ButtonMap, PollingRate};
 
 use crate::scripts::usage_for_slot;
 use crate::{ApplyError, DeviceService};
@@ -259,7 +259,10 @@ impl Controller {
         let is_active = {
             let mut store = self.store.lock().unwrap();
             let is_active = store.active == profile;
-            let p = store
+            // Work on a copy: nothing is committed until the hotkey is
+            // registered and the file is written.
+            let mut next = store.clone();
+            let p = next
                 .profiles
                 .iter_mut()
                 .find(|p| p.name == profile)
@@ -267,11 +270,11 @@ impl Controller {
             if let Some(existing) = p.scripts.iter_mut().find(|s| s.slot == slot) {
                 existing.command = command.to_string();
                 existing.label = label.to_string();
-                return self.persist(&store);
+                self.persist(&next)?;
+                *store = next;
+                return Ok(());
             }
-            if is_active {
-                self.keys.register(usage)?;
-            }
+            let previous = p.buttons.0[slot];
             p.buttons.0[slot] = ButtonAction::Key {
                 modifiers: 0,
                 usage,
@@ -281,12 +284,23 @@ impl Controller {
                 hotkey_usage: usage,
                 command: command.to_string(),
                 label: label.to_string(),
+                previous: Some(previous),
             });
-            self.persist(&store)?;
+            if is_active {
+                self.keys.register(usage)?;
+            }
+            if let Err(e) = self.persist(&next) {
+                if is_active {
+                    self.keys.unregister(usage);
+                }
+                return Err(e);
+            }
+            *store = next;
             is_active
         };
         if is_active {
-            // If the mouse is asleep the button change stays pending; the UI shows that.
+            // If the mouse is asleep the button change stays pending and is
+            // sent when it wakes.
             let _ = self.apply_profile(profile);
         }
         Ok(())
@@ -308,7 +322,7 @@ impl Controller {
                 .position(|s| s.slot == slot)
                 .ok_or("este botão não tem script")?;
             let removed = p.scripts.remove(idx);
-            p.buttons.0[slot] = ButtonMap::factory().0[slot];
+            p.buttons.0[slot] = removed.previous.unwrap_or(ButtonMap::factory().0[slot]);
             if is_active {
                 self.keys.unregister(removed.hotkey_usage);
             }
@@ -319,6 +333,75 @@ impl Controller {
             let _ = self.apply_profile(profile);
         }
         Ok(())
+    }
+
+    /// Save an edited profile and, if it is the active one, send what changed
+    /// right away. If the mouse cannot take it now the edit is still saved
+    /// and stays pending (see `apply_pending`).
+    pub fn update_profile(&self, profile: Profile) -> Result<Vec<Section>, ApplyError> {
+        let name = profile.name.clone();
+        self.save_profile(profile).map_err(ApplyError::Invalid)?;
+        if self.store.lock().unwrap().active != name {
+            return Ok(Vec::new());
+        }
+        self.apply_profile(&name)
+    }
+
+    /// Send whatever the active profile still owes the mouse (called when the
+    /// mouse wakes up).
+    pub fn apply_pending(&self) -> Result<Vec<Section>, ApplyError> {
+        let name = self.store.lock().unwrap().active.clone();
+        self.apply_profile(&name)
+    }
+
+    /// Mirror values the mouse reported about itself (DPI button pressed,
+    /// etc.) into the active profile. They are already on the mouse, so they
+    /// are recorded as applied, not pending. Returns true if anything changed.
+    pub fn note_live(
+        &self,
+        dpi_stage: Option<u8>,
+        polling: Option<PollingRate>,
+        light_mode: Option<u8>,
+    ) -> bool {
+        let mut store = self.store.lock().unwrap();
+        let active = store.active.clone();
+        let Some(profile) = store.profiles.iter().find(|p| p.name == active).cloned() else {
+            return false;
+        };
+        let stage = dpi_stage.filter(|s| {
+            profile
+                .sensor
+                .stages
+                .get((*s as usize).wrapping_sub(1))
+                .is_some_and(|st| st.enabled)
+                && *s != profile.sensor.current_stage
+        });
+        let polling = polling.filter(|p| *p != profile.polling);
+        let light = light_mode.filter(|m| *m <= 11 && *m != profile.power_light.light_mode);
+        if stage.is_none() && polling.is_none() && light.is_none() {
+            return false;
+        }
+        let set = |p: &mut Profile| {
+            if let Some(s) = stage {
+                p.sensor.current_stage = s;
+            }
+            if let Some(r) = polling {
+                p.polling = r;
+            }
+            if let Some(m) = light {
+                p.power_light.light_mode = m;
+            }
+        };
+        if let Some(p) = store.profiles.iter_mut().find(|p| p.name == active) {
+            set(p);
+        }
+        // Only where the mouse was already in step with the profile; a
+        // different last-applied profile keeps its own values.
+        if let Some(last) = store.last_applied.as_mut().filter(|l| l.name == active) {
+            set(last);
+        }
+        let _ = self.persist(&store);
+        true
     }
 
     /// The active profile's script for a hotkey, if any.
@@ -363,7 +446,6 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use delux_proto::PollingRate;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -501,6 +583,130 @@ mod tests {
         assert_eq!(f.c.apply_profile("Padrão"), Err(ApplyError::Asleep));
         assert!(!f.c.store().applied_once());
         assert_eq!(f.c.pending_sections("Padrão"), Section::ALL.to_vec());
+    }
+
+    #[test]
+    fn update_profile_saves_and_sends_only_what_changed() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        let mut p = f.c.store().active_profile().clone();
+        p.sensor.stages[0].dpi = 1600;
+        assert_eq!(f.c.update_profile(p), Ok(vec![Section::Sensor]));
+        assert_eq!(f.c.store().active_profile().sensor.stages[0].dpi, 1600);
+        assert!(f.c.pending_sections("Padrão").is_empty());
+    }
+
+    #[test]
+    fn update_profile_while_asleep_keeps_the_change_for_later() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        *f.mouse.asleep.lock().unwrap() = true;
+        let mut p = f.c.store().active_profile().clone();
+        p.polling = PollingRate::Hz500;
+        assert_eq!(f.c.update_profile(p), Err(ApplyError::Asleep));
+        assert_eq!(
+            f.c.store().active_profile().polling,
+            PollingRate::Hz500,
+            "saved"
+        );
+        assert_eq!(f.c.pending_sections("Padrão"), vec![Section::Polling]);
+        // mouse wakes up: the app retries by itself
+        *f.mouse.asleep.lock().unwrap() = false;
+        assert_eq!(f.c.apply_pending(), Ok(vec![Section::Polling]));
+        assert_eq!(f.c.apply_pending(), Ok(vec![]));
+    }
+
+    #[test]
+    fn update_profile_on_inactive_profile_sends_nothing() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        f.c.create_profile("Jogo").unwrap();
+        let mut p = f.c.store().profiles[1].clone();
+        p.polling = PollingRate::Hz500;
+        let before = sent(&f).len();
+        assert_eq!(f.c.update_profile(p), Ok(vec![]));
+        assert_eq!(sent(&f).len(), before);
+    }
+
+    #[test]
+    fn update_profile_rejects_invalid_and_sends_nothing() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        let mut p = f.c.store().active_profile().clone();
+        p.sensor.stages[0].dpi = 123;
+        let before = sent(&f).len();
+        assert!(matches!(f.c.update_profile(p), Err(ApplyError::Invalid(_))));
+        assert_eq!(sent(&f).len(), before);
+    }
+
+    #[test]
+    fn stage_changed_on_the_mouse_is_mirrored_without_resending() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        let before = sent(&f).len();
+        assert!(f.c.note_live(Some(5), None, None), "profile changed");
+        assert_eq!(f.c.store().active_profile().sensor.current_stage, 5);
+        assert!(
+            f.c.pending_sections("Padrão").is_empty(),
+            "mouse already has it"
+        );
+        assert_eq!(sent(&f).len(), before);
+        assert!(!f.c.note_live(Some(5), None, None), "nothing new");
+    }
+
+    #[test]
+    fn live_stage_that_the_profile_has_disabled_is_ignored() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        assert!(!f.c.note_live(Some(8), None, None)); // stage 8 is off in the default profile
+        assert!(!f.c.note_live(Some(0), None, None));
+        assert!(!f.c.note_live(Some(9), None, None));
+        assert_eq!(f.c.store().active_profile().sensor.current_stage, 3);
+    }
+
+    #[test]
+    fn polling_and_light_changed_on_the_mouse_are_mirrored() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        assert!(f.c.note_live(None, Some(PollingRate::Hz8000), Some(2)));
+        let p = f.c.store().active_profile().clone();
+        assert_eq!(p.polling, PollingRate::Hz8000);
+        assert_eq!(p.power_light.light_mode, 2);
+        assert!(f.c.pending_sections("Padrão").is_empty());
+        assert!(
+            !f.c.note_live(None, None, Some(99)),
+            "out-of-range light mode ignored"
+        );
+    }
+
+    #[test]
+    fn live_values_do_not_hide_a_pending_change() {
+        let f = fx();
+        f.c.apply_profile("Padrão").unwrap();
+        *f.mouse.asleep.lock().unwrap() = true;
+        let mut p = f.c.store().active_profile().clone();
+        p.sensor.stages[0].dpi = 1600;
+        let _ = f.c.update_profile(p);
+        f.c.note_live(Some(5), None, None);
+        assert_eq!(
+            f.c.pending_sections("Padrão"),
+            vec![Section::Sensor],
+            "DPI edit still pending"
+        );
+    }
+
+    #[test]
+    fn unbind_gives_the_button_back_what_it_had_before() {
+        let f = fx();
+        let mut p = f.c.store().active_profile().clone();
+        p.buttons.0[7] = ButtonAction::Media(0x18);
+        f.c.save_profile(p).unwrap();
+        f.c.bind_script("Padrão", 7, "x", "X").unwrap();
+        f.c.unbind_script("Padrão", 7).unwrap();
+        assert_eq!(
+            f.c.store().active_profile().buttons.0[7],
+            ButtonAction::Media(0x18)
+        );
     }
 
     #[test]
@@ -699,6 +905,7 @@ mod tests {
             hotkey_usage: 0x68,
             command: "x".into(),
             label: "X".into(),
+            previous: None,
         });
         store.last_applied = Some(store.profiles[0].clone());
         delux_profile::save(&f.path, &store).unwrap();

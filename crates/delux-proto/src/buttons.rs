@@ -28,6 +28,9 @@ pub enum ButtonAction {
     },
     /// Media / system function code, 0x15..=0x26.
     Media(u8),
+    /// Plays the macro stored for this button (see `macros`). On the wire the
+    /// entry names its own slot: `12 00 <slot + 1>`.
+    Macro,
     /// Any other firmware code, passed through untouched.
     Raw([u8; 3]),
 }
@@ -51,6 +54,8 @@ impl ButtonAction {
             Self::DpiDown => simple(0x0F),
             Self::Key { modifiers, usage } => [0x11, modifiers, usage],
             Self::Media(code) => simple(code),
+            // Slot number is filled in by `encode_buttons`.
+            Self::Macro => [0x12, 0, 0],
             Self::Raw(bytes) => bytes,
         }
     }
@@ -72,6 +77,7 @@ impl ButtonAction {
             [0x0F, 0, 0] => Self::DpiDown,
             [0x11, modifiers, usage] => Self::Key { modifiers, usage },
             [code @ 0x15..=0x26, 0, 0] => Self::Media(code),
+            [0x12, 0, _] => Self::Macro,
             other => Self::Raw(other),
         }
     }
@@ -112,7 +118,11 @@ pub fn encode_buttons(map: &ButtonMap) -> Result<Vec<u8>, Error> {
     let mut p = vec![0u8; 0x3B];
     p[..3].copy_from_slice(&[0x08, 0x3B, 0x01]);
     for (i, a) in map.0.iter().enumerate() {
-        p[3 + i * 3..6 + i * 3].copy_from_slice(&a.to_bytes());
+        let bytes = match a {
+            ButtonAction::Macro => [0x12, 0, i as u8 + 1],
+            other => other.to_bytes(),
+        };
+        p[3 + i * 3..6 + i * 3].copy_from_slice(&bytes);
     }
     let cs = checksum16(&p[3..57]).to_be_bytes();
     p[57..59].copy_from_slice(&cs);
@@ -188,6 +198,18 @@ mod tests {
         assert_eq!(&p[24..27], &[0x05, 0, 0]); // slot 7 = back
         assert_eq!(&p[51..54], &[0x09, 0, 0]); // slot 16 = scroll up
         assert_eq!(u16::from_be_bytes([p[57], p[58]]), checksum16(&p[3..57]));
+    }
+
+    #[test]
+    fn macro_button_carries_its_own_slot_number() {
+        // `12 00 <slot, 1-based>`: the macro is stored per button.
+        let mut m = ButtonMap::factory();
+        m.0[7] = ButtonAction::Macro;
+        m.0[3] = ButtonAction::Macro;
+        let p = encode_buttons(&m).unwrap();
+        assert_eq!(&p[24..27], &[0x12, 0x00, 0x08]);
+        assert_eq!(&p[12..15], &[0x12, 0x00, 0x04]);
+        assert_eq!(ButtonAction::from_bytes([0x12, 0, 8]), ButtonAction::Macro);
     }
 
     #[test]

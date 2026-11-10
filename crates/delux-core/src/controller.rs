@@ -574,7 +574,8 @@ mod tests {
             Ok(vec![
                 Section::Polling,
                 Section::PowerLight,
-                Section::Buttons
+                Section::Buttons,
+                Section::Macros
             ])
         );
     }

@@ -4,8 +4,8 @@
 pub mod store;
 
 use delux_proto::{
-    encode_buttons, encode_power_light, encode_sensor, ButtonAction, ButtonMap, PollingRate,
-    PowerLightConfig, SensorConfig, SLOT_COUNT,
+    encode_buttons, encode_macro, encode_power_light, encode_sensor, ButtonAction, ButtonMap,
+    Macro, PollingRate, PowerLightConfig, SensorConfig, SLOT_COUNT,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,14 @@ pub struct ScriptBinding {
     pub previous: Option<ButtonAction>,
 }
 
+/// A macro stored in the mouse for one button. Works without the app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacroBinding {
+    pub slot: usize,
+    pub name: String,
+    pub definition: Macro,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
@@ -37,6 +45,8 @@ pub struct Profile {
     /// Keep the light colour equal to the current DPI stage's colour.
     #[serde(default)]
     pub light_follows_dpi: bool,
+    #[serde(default)]
+    pub macros: Vec<MacroBinding>,
 }
 
 impl Profile {
@@ -49,6 +59,7 @@ impl Profile {
             buttons: ButtonMap::factory(),
             scripts: Vec::new(),
             light_follows_dpi: false,
+            macros: Vec::new(),
         }
     }
 
@@ -114,6 +125,29 @@ impl Profile {
                 errs.push(format!("slot {} não emite a tecla do seu script", s.slot));
             }
         }
+        // Macros: same buttons a script may take; button and macro must agree.
+        let mut macro_slots = Vec::new();
+        for m in &self.macros {
+            if !(3..=15).contains(&m.slot) {
+                errs.push(format!("macro em botão inválido: {}", m.slot));
+                continue;
+            }
+            if macro_slots.contains(&m.slot) || seen.contains(&m.slot) {
+                errs.push(format!("slot {} tem mais de uma atribuição", m.slot));
+            }
+            macro_slots.push(m.slot);
+            if self.buttons.0[m.slot] != ButtonAction::Macro {
+                errs.push(format!("slot {} não aponta para a sua macro", m.slot));
+            }
+            if let Err(e) = encode_macro(m.slot, &m.definition) {
+                errs.push(format!("macro {:?}: {e}", m.name));
+            }
+        }
+        for (slot, action) in self.buttons.0.iter().enumerate() {
+            if *action == ButtonAction::Macro && !macro_slots.contains(&slot) {
+                errs.push(format!("slot {slot} é botão de macro sem macro definida"));
+            }
+        }
         if errs.is_empty() {
             Ok(())
         } else {
@@ -129,14 +163,17 @@ pub enum Section {
     Polling,
     PowerLight,
     Buttons,
+    /// One packet per macro; sent after the button map, as the driver does.
+    Macros,
 }
 
 impl Section {
-    pub const ALL: [Section; 4] = [
+    pub const ALL: [Section; 5] = [
         Section::Sensor,
         Section::Polling,
         Section::PowerLight,
         Section::Buttons,
+        Section::Macros,
     ];
 }
 
@@ -149,6 +186,7 @@ pub fn changed_sections(old: &Profile, new: &Profile) -> Vec<Section> {
             Section::Polling => old.polling != new.polling,
             Section::PowerLight => old.power_light != new.power_light,
             Section::Buttons => old.buttons != new.buttons,
+            Section::Macros => old.macros != new.macros,
         })
         .collect()
 }
@@ -239,6 +277,75 @@ mod tests {
         let mut p = with_script(7);
         p.scripts.push(p.scripts[0].clone());
         assert!(p.validate().is_err());
+    }
+
+    fn with_macro(slot: usize) -> Profile {
+        use delux_proto::{Macro, MacroStep, Repeat};
+        let mut p = Profile::default_named("t");
+        if slot < p.buttons.0.len() {
+            p.buttons.0[slot] = ButtonAction::Macro;
+        }
+        p.macros.push(MacroBinding {
+            slot,
+            name: "ab".into(),
+            definition: Macro {
+                steps: vec![
+                    MacroStep {
+                        down: true,
+                        code: 4,
+                        delay_ms: 50,
+                    },
+                    MacroStep {
+                        down: false,
+                        code: 4,
+                        delay_ms: 10,
+                    },
+                ],
+                repeat: Repeat::Times(1),
+            },
+        });
+        p
+    }
+
+    #[test]
+    fn macro_on_a_side_button_is_valid() {
+        assert_eq!(with_macro(7).validate(), Ok(()));
+    }
+
+    #[test]
+    fn macro_slot_rules() {
+        for slot in [0usize, 1, 2, 16, 17, 18] {
+            assert!(with_macro(slot).validate().is_err(), "slot {slot}");
+        }
+        let mut no_button = with_macro(7);
+        no_button.buttons.0[7] = ButtonAction::Back;
+        assert!(
+            no_button.validate().is_err(),
+            "button does not point at the macro"
+        );
+        let mut orphan = Profile::default_named("t");
+        orphan.buttons.0[7] = ButtonAction::Macro;
+        assert!(orphan.validate().is_err(), "macro button without a macro");
+        let mut dup = with_macro(7);
+        dup.macros.push(dup.macros[0].clone());
+        assert!(dup.validate().is_err());
+        let mut stuck = with_macro(7);
+        stuck.macros[0].definition.steps.pop();
+        assert!(stuck.validate().is_err(), "key left down");
+    }
+
+    #[test]
+    fn changed_sections_macros() {
+        let a = with_macro(7);
+        let mut b = a.clone();
+        b.macros[0].definition.steps[0].delay_ms = 30;
+        assert_eq!(changed_sections(&a, &b), vec![Section::Macros]);
+        // adding a macro changes the button too
+        let plain = Profile::default_named("t");
+        assert_eq!(
+            changed_sections(&plain, &a),
+            vec![Section::Buttons, Section::Macros]
+        );
     }
 
     #[test]

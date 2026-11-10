@@ -11,8 +11,9 @@ use std::time::Duration;
 use delux_hid::{Device, HidError};
 use delux_profile::{Profile, Section};
 use delux_proto::{
-    encode_buttons, encode_factory_reset, encode_polling, encode_power_light, encode_sensor,
-    frames, BatteryState, Event, EventKind, Frame, PollingRate, MODEL_M900PRO_8K_MS4,
+    encode_buttons, encode_factory_reset, encode_macro, encode_polling, encode_power_light,
+    encode_sensor, frames, BatteryState, Event, EventKind, Frame, PollingRate,
+    MODEL_M900PRO_8K_MS4,
 };
 use serde::Serialize;
 
@@ -285,15 +286,32 @@ impl DeviceService {
         let invalid = |e: delux_proto::Error| ApplyError::Invalid(vec![e.to_string()]);
         let mut packets = Vec::new();
         for s in Section::ALL.into_iter().filter(|s| sections.contains(s)) {
-            let inner = match s {
-                Section::Sensor => encode_sensor(&profile.sensor).map_err(invalid)?,
-                Section::Polling => encode_polling(profile.polling),
-                Section::PowerLight => encode_power_light(&profile.power_light).map_err(invalid)?,
-                Section::Buttons => encode_buttons(&profile.buttons).map_err(invalid)?,
+            let inners = match s {
+                Section::Sensor => vec![encode_sensor(&profile.sensor).map_err(invalid)?],
+                Section::Polling => vec![encode_polling(profile.polling)],
+                Section::PowerLight => {
+                    vec![encode_power_light(&profile.power_light).map_err(invalid)?]
+                }
+                Section::Buttons => vec![encode_buttons(&profile.buttons).map_err(invalid)?],
+                Section::Macros => {
+                    // One packet per macro, ascending slot, as the vendor driver does.
+                    let mut macros: Vec<_> = profile.macros.iter().collect();
+                    macros.sort_by_key(|m| m.slot);
+                    macros
+                        .into_iter()
+                        .map(|m| encode_macro(m.slot, &m.definition))
+                        .collect::<Result<_, _>>()
+                        .map_err(invalid)?
+                }
             };
-            packets.push((s, frames(&inner).map_err(invalid)?));
+            for inner in inners {
+                packets.push((s, frames(&inner).map_err(invalid)?));
+            }
         }
-        let asked: Vec<Section> = packets.iter().map(|(s, _)| *s).collect();
+        let asked: Vec<Section> = Section::ALL
+            .into_iter()
+            .filter(|s| sections.contains(s))
+            .collect();
         let result = self.send(packets);
         // What reached the mouse is now its state; remember it so later
         // reports from the mouse are compared against the truth.
@@ -308,7 +326,7 @@ impl DeviceService {
                 Section::Sensor => seen.dpi_stage = Some(profile.sensor.current_stage),
                 Section::Polling => seen.polling = Some(profile.polling),
                 Section::PowerLight => seen.light_mode = Some(profile.power_light.light_mode),
-                Section::Buttons => {}
+                Section::Buttons | Section::Macros => {}
             }
         }
         result
@@ -339,14 +357,30 @@ impl DeviceService {
             {
                 e
             }
-            e => ApplyError::Io {
-                sent: sections[..done].to_vec(),
-                pending: sections[done..].to_vec(),
-                message: match e {
-                    ApplyError::Io { message, .. } => message,
-                    other => other.to_string(),
-                },
-            },
+            e => {
+                // A section with several packets (macros) counts as sent
+                // only when all of them went out.
+                let mut pending: Vec<Section> = Vec::new();
+                for s in &sections[done..] {
+                    if !pending.contains(s) {
+                        pending.push(*s);
+                    }
+                }
+                let mut sent: Vec<Section> = Vec::new();
+                for s in &sections[..done] {
+                    if !pending.contains(s) && !sent.contains(s) {
+                        sent.push(*s);
+                    }
+                }
+                ApplyError::Io {
+                    sent,
+                    pending,
+                    message: match e {
+                        ApplyError::Io { message, .. } => message,
+                        other => other.to_string(),
+                    },
+                }
+            }
         })
     }
 
@@ -679,7 +713,8 @@ mod tests {
         match svc.apply(&p, &Section::ALL) {
             Err(ApplyError::Io { sent, pending, .. }) => {
                 assert_eq!(sent, vec![]);
-                assert_eq!(pending, Section::ALL.to_vec());
+                // Macros has no packets for this profile, so it is not owed.
+                assert_eq!(pending, Section::ALL[..4].to_vec());
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -848,6 +883,79 @@ mod tests {
         expected.extend(frames(&encode_power_light(&p.power_light).unwrap()).unwrap());
         expected.extend(frames(&encode_buttons(&p.buttons).unwrap()).unwrap());
         assert_eq!(*world.written.lock().unwrap(), expected);
+    }
+
+    fn profile_with_macros(slots: &[usize]) -> Profile {
+        use delux_proto::{ButtonAction, Macro, MacroStep, Repeat};
+        let mut p = Profile::default_named("t");
+        for slot in slots {
+            p.buttons.0[*slot] = ButtonAction::Macro;
+            p.macros.push(delux_profile::MacroBinding {
+                slot: *slot,
+                name: format!("m{slot}"),
+                definition: Macro {
+                    steps: vec![
+                        MacroStep {
+                            down: true,
+                            code: 4,
+                            delay_ms: 50,
+                        },
+                        MacroStep {
+                            down: false,
+                            code: 4,
+                            delay_ms: 10,
+                        },
+                    ],
+                    repeat: Repeat::Times(1),
+                },
+            });
+        }
+        p
+    }
+
+    #[test]
+    fn macros_are_sent_after_the_button_map_one_packet_each() {
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        let p = profile_with_macros(&[7, 6]);
+        assert_eq!(svc.apply(&p, &[Section::Buttons, Section::Macros]), Ok(()));
+        let mut expected = frames(&encode_buttons(&p.buttons).unwrap()).unwrap();
+        // ascending slot order, as the vendor driver does
+        expected.extend(
+            frames(&delux_proto::encode_macro(6, &p.macros[1].definition).unwrap()).unwrap(),
+        );
+        expected.extend(
+            frames(&delux_proto::encode_macro(7, &p.macros[0].definition).unwrap()).unwrap(),
+        );
+        assert_eq!(*world.written.lock().unwrap(), expected);
+    }
+
+    #[test]
+    fn failure_between_two_macros_keeps_macros_pending_once() {
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        world.fail_write_at.store(3, Ordering::SeqCst); // buttons ok, macro 1 ok, macro 2 fails
+        match svc.apply(
+            &profile_with_macros(&[6, 7]),
+            &[Section::Buttons, Section::Macros],
+        ) {
+            Err(ApplyError::Io { sent, pending, .. }) => {
+                assert_eq!(sent, vec![Section::Buttons]);
+                assert_eq!(pending, vec![Section::Macros]);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn macros_section_with_no_macros_sends_nothing() {
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        assert_eq!(
+            svc.apply(&Profile::default_named("t"), &[Section::Macros]),
+            Ok(())
+        );
+        assert!(world.written.lock().unwrap().is_empty());
     }
 
     #[test]

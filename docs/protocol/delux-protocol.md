@@ -269,3 +269,19 @@ Onde esta seção divergir do resto do documento, vale esta seção.
 | `0x08` tecla `11 00 68` | **confirmado**: lateral de trás emite HID usage 0x68 (F13) na interface de teclado do receptor |
 | evento bateria | **confirmado**: v0 = 1 descarregando, v0 = 3 carregando (cabo conectado). v0 = 2 (cheio) não observado. Após tirar o cabo a porcentagem oscila alguns segundos (100 → 86 → 84) |
 | `0x0C` reset | **sem efeito observável sozinho**: DPI, botão remapeado e luz ficaram como estavam. "Restaurar fábrica" = `0x0C` + reenviar todas as seções com os padrões do driver |
+
+### Correção 2026-11-10 — polling e eventos da variante 0x30 (MS_4)
+
+Fonte: segunda análise estática do driver (relatório completo em `.re/readback-driver-report.md`, fora do git).
+
+- **Cmd `0x06` em MS_4 usa código one-hot**, não `(hs<<4)|low` (código de aplicar em `0x4d8fef`):
+
+  | taxa | 125 | 250 | 500 | 1000 | 2000 | 4000 | 8000 Hz |
+  |---|---|---|---|---|---|---|---|
+  | B | 0x20 | 0x10 | 0x08 | 0x04 | 0x02 | 0x01 | 0x40 |
+
+  Pacote: `06 09 01 B ~B 00 00 00 00`. Os testes de polling de 2026-11-10 usaram a codificação antiga (ex.: `0x44` para 1000 Hz) — valores inválidos para este modelo; efeito no mouse desconhecido. **Ainda não verificado no hardware com a codificação correta.**
+- Evento `0x20`: v0 = mesmo código one-hot (taxa atual).
+- Evento `0x70`: v0 = índice do modo de luz atual (0..7), o mesmo campo do byte 3 do cmd `0x05`.
+- Evento `0x60`: 1..10, provavelmente nível grosso de bateria (inferido). Evento `0x80`: 1..5, significado não determinado.
+- **Não existe leitura de configuração**: o driver não tem nenhum comando de consulta em nenhum transporte (sem `hid_get_feature_report`, `GetFeature` resolvido mas nunca chamado, report 4 de entrada nunca lido). O web driver da Delux (`controlhub.top`) é de outra família (Compx, VID 3554, report ID 8) e não serve para este receptor.

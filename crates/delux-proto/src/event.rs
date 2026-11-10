@@ -1,5 +1,7 @@
 //! Report-ID-3 events sent by the mouse: `03, model, type, v0, v1`.
 
+use crate::PollingRate;
+
 /// Model code of the M900 PRO 8K variant handled by driver page MS_4.
 pub const MODEL_M900PRO_8K_MS4: u8 = 0x30;
 
@@ -19,8 +21,10 @@ pub enum EventKind {
     },
     /// 1-based DPI stage.
     DpiStage(u8),
-    /// Polling code 1..=7 (125 Hz .. 8000 Hz).
-    PollingRate(u8),
+    /// Current polling rate; `None` if the code is not a known rate.
+    PollingRate(Option<PollingRate>),
+    /// Current light mode index (same value cmd 0x05 sends).
+    LightMode(u8),
     Ack(u8),
     Other {
         kind: u8,
@@ -60,7 +64,8 @@ pub fn parse_event(report: &[u8]) -> Option<Event> {
             },
         },
         0x10 => EventKind::DpiStage(v0),
-        0x20 => EventKind::PollingRate((v0 >> 4) & 0x0F),
+        0x20 => EventKind::PollingRate(PollingRate::from_wire(v0)),
+        0x70 => EventKind::LightMode(v0),
         0x50 => EventKind::Ack(v0),
         kind => EventKind::Other { kind, v0, v1 },
     };
@@ -139,8 +144,20 @@ mod tests {
     #[test]
     fn polling() {
         assert_eq!(
-            parse_event(&[3, 0x30, 0x20, 0x70, 0]).unwrap().kind,
-            EventKind::PollingRate(7)
+            parse_event(&[3, 0x30, 0x20, 0x40, 0]).unwrap().kind,
+            EventKind::PollingRate(Some(PollingRate::Hz8000))
+        );
+        assert_eq!(
+            parse_event(&[3, 0x30, 0x20, 0x04, 0]).unwrap().kind,
+            EventKind::PollingRate(Some(PollingRate::Hz1000))
+        );
+        assert_eq!(
+            parse_event(&[3, 0x30, 0x20, 0x44, 0]).unwrap().kind,
+            EventKind::PollingRate(None)
+        );
+        assert_eq!(
+            parse_event(&[3, 0x30, 0x70, 2, 0]).unwrap().kind,
+            EventKind::LightMode(2)
         );
     }
 
@@ -151,9 +168,9 @@ mod tests {
             EventKind::Ack(0)
         );
         assert_eq!(
-            parse_event(&[3, 0x30, 0x70, 1, 2]).unwrap().kind,
+            parse_event(&[3, 0x30, 0x80, 1, 2]).unwrap().kind,
             EventKind::Other {
-                kind: 0x70,
+                kind: 0x80,
                 v0: 1,
                 v1: 2
             }

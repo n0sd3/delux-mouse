@@ -219,3 +219,39 @@ Events: key `[(up ? 0x81 : 0x01) | delay, code]` when delay < 0x80; `[flag | del
 | 0x4687e0, 0x453230, 0x468b90, 0x453590 | MS_16 equivalents |
 | 0x4d8db0, 0x4d0230, 0x4d9140 | MS_4 equivalents |
 | 0x4592f0, 0x4a2ba0, 0x49d260, 0x49fcc0 | config→UI map, defaults, control binding, menu→function id |
+
+---
+
+## Variante 0x30 (MS_4) — layouts finais
+
+Fonte: decompilação Ghidra de `FUN_004d0230` (DELUX.exe sha256 `2d1f3770…664715f`), 2026-11-10.
+Onde esta seção divergir do resto do documento, vale esta seção.
+
+### Cmd 0x04 — confirmado no código
+
+| offset | conteúdo | origem no struct de config |
+|---|---|---|
+| 0–2 | `04 38 01` | constante |
+| 3 | LOD (0 = 1 mm, 1 = 2 mm) | `+0x8b4` |
+| 4 | ripple (0/1) | `+0x940` |
+| 5 | bitmask de estágios ativos, bit i = estágio i+1 | `+0x904 … +0x920` (`== 1`) |
+| 6 | angle snap (0/1) | `+0x944` |
+| 7 | motion sync (0/1) | `+0x948` |
+| 8–15 | byte baixo de (valor − 1), estágios 1..8 | `+0x8c4 …` (int32 cada) |
+| 16–23 | byte alto de (valor − 1) | idem |
+| 24 | estágio atual, 1-based (guardado 0-based, envia +1) | `+0x934` |
+| 25–48 | 8 × RGB | `+0x960 …` (passo 4) |
+| 49 | `0x03` constante | — |
+| 50, 51 | checksum16 dos bytes [3..50), big-endian | — |
+| 52–55 | zero | — |
+
+- "valor" = DPI/50 (slider 1..520), conforme o resto da spec.
+- Bytes 3, 4, 6, 7: os **offsets** são confirmados; o **nome** de cada campo (LOD/ripple/angle/motion) vem do mapeamento de UI da variante MS_21, que usa os mesmos offsets de struct. Confirmar no hardware.
+- **Não existe campo "modo do sensor" nesta variante.** A regra "polling > 1000 Hz exige modo Gaming" não se aplica.
+- Transporte: `FUN_004cf440(this, buf, 0x38)`.
+
+### Não reanalisado para MS_4 (vale o layout comum; confirmar no hardware)
+
+- `0x06` polling: qual nibble o receptor 8K usa — determinar pelo evento `0x20` no teste.
+- `0x05`, `0x08`: constantes conferidas por amostragem na análise original; ordem dos 18 slots a levantar no hardware.
+- Evento de bateria: tipo `0x40` medido no hardware (v0 = 1 descarregando, 84 %).

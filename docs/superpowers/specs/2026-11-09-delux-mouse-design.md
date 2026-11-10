@@ -72,7 +72,7 @@ Tecnologia: Rust; UI com Tauri 2 (núcleo Rust, tela em HTML/CSS/JS simples, sem
 
 | Aba | Conteúdo | Comando |
 |---|---|---|
-| Sensor | 8 estágios de DPI (liga/desliga, 50–26000 passo 50, cor), estágio atual, polling 125–8000 Hz, LOD 1/2 mm, ripple, angle snap, motion sync, modo do sensor | `0x04`, `0x06` |
+| Sensor | 8 estágios de DPI (liga/desliga, 50–26000 passo 50, cor), estágio atual, polling 125–8000 Hz, LOD 1/2 mm, ripple, angle snap, motion sync. (Sem "modo do sensor": não existe na variante `0x30` — confirmado no driver em 2026-11-10.) | `0x04`, `0x06` |
 | Botões | função de cada botão no firmware: clique, DPI, tecla+modificador, mídia, desligado | `0x08` |
 | Scripts | botão → comando shell / arquivo de script / atalho de teclado | ver 6.4 |
 | Luz | modo, brilho, velocidade, cor, timer de apagar | `0x05` |
@@ -82,7 +82,7 @@ Tecnologia: Rust; UI com Tauri 2 (núcleo Rust, tela em HTML/CSS/JS simples, sem
 - Enquanto um perfil nunca foi aplicado nesta instalação, a janela avisa: "valores mostrados são do perfil, não do mouse". Primeiro perfil é criado com os padrões do driver.
 - Vários perfis nomeados (ex.: Trabalho, Jogo). **[decisão minha, inspirado no mockup]** Trocar de perfil pelo menu aplica na hora (alguns segundos; exige mouse acordado, senão fica pendente com aviso). Atribuições de script fazem parte do perfil.
 - Macros fora da v1: o usuário concordou ao revisar o resumo. **[usuário]**
-- Polling > 1000 Hz força modo "Gaming" com aviso (mesma regra do driver).
+- Regra "polling > 1000 Hz exige modo Gaming" não se aplica à variante `0x30` (sem campo de modo).
 - "Restaurar padrão de fábrica" com confirmação.
 - Eventos do mouse atualizam a UI (estágio de DPI trocado no botão físico).
 

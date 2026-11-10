@@ -203,6 +203,66 @@ pub fn capture_keyboard_reports(secs: u64) -> Result<Vec<Vec<u8>>, HidError> {
     Ok(out)
 }
 
+/// One captured input report: arrival µs, interface label, raw bytes.
+pub struct Captured {
+    pub t_us: u64,
+    /// "usage page:usage" of the interface the report came from.
+    pub source: String,
+    pub data: Vec<u8>,
+}
+
+/// Diagnostic: read raw input reports from every interface of the mouse
+/// (receiver or cable) for `secs`. With `mouse_only`, just the movement
+/// interface. Nothing is sent.
+pub fn capture_reports(secs: u64, mouse_only: bool) -> Result<Vec<Captured>, HidError> {
+    let api = hidapi::HidApi::new()?;
+    let mut paths: Vec<(std::ffi::CString, String)> = Vec::new();
+    for d in api.device_list() {
+        let ours = d.vendor_id() == VID && (d.product_id() == PID || d.product_id() == PID_WIRED);
+        let wanted = !mouse_only || (d.usage_page() == 1 && d.usage() == 2);
+        if ours && wanted && !paths.iter().any(|(p, _)| p.as_c_str() == d.path()) {
+            paths.push((
+                d.path().to_owned(),
+                format!("{:04x}:{:02x}", d.usage_page(), d.usage()),
+            ));
+        }
+    }
+    if paths.is_empty() {
+        return Err(HidError::NotFound);
+    }
+    let mut devs = Vec::new();
+    for (path, label) in &paths {
+        let dev = api.open_path(path)?;
+        dev.set_blocking_mode(false)?;
+        devs.push((dev, label.clone()));
+    }
+    let start = std::time::Instant::now();
+    let mut buf = [0u8; 128];
+    let mut out = Vec::new();
+    while start.elapsed() < Duration::from_secs(secs) {
+        let mut idle = true;
+        for (dev, label) in &devs {
+            // Drain everything queued on this interface.
+            loop {
+                let n = dev.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                idle = false;
+                out.push(Captured {
+                    t_us: start.elapsed().as_micros() as u64,
+                    source: label.clone(),
+                    data: buf[..n].to_vec(),
+                });
+            }
+        }
+        if idle {
+            sleep(Duration::from_micros(200));
+        }
+    }
+    Ok(out)
+}
+
 /// Wired mode: the mouse itself on USB (switch OFF, cable plugged).
 pub const PID_WIRED: u16 = 0xFA73;
 const WIRED_COMMAND_USAGE_PAGE: u16 = 0x000B;

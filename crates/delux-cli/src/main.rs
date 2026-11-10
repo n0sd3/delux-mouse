@@ -1,6 +1,7 @@
 //! `delux` — diagnostic CLI for the Delux M900 PRO 8K receiver.
 
 mod hex;
+mod motion;
 mod rate;
 
 use std::process::ExitCode;
@@ -102,6 +103,21 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         secs: u64,
     },
+    /// Mede estatísticas do movimento bruto (mova o mouse durante a medição).
+    MeasureMotion {
+        #[arg(long, default_value_t = 8)]
+        secs: u64,
+    },
+    /// Mede duração dos cliques do botão esquerdo (clique várias vezes).
+    MeasureClicks {
+        #[arg(long, default_value_t = 8)]
+        secs: u64,
+    },
+    /// Mostra todos os relatórios que o mouse emite, de todas as interfaces.
+    Capture {
+        #[arg(long, default_value_t = 8)]
+        secs: u64,
+    },
     /// Modo cabo, só leitura: pede ao mouse os feature reports declarados.
     WiredRead,
     /// Reset de fábrica (cmd 0x0C).
@@ -199,6 +215,47 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             Ok(())
         }
+        Cmd::MeasureMotion { secs } => {
+            let st = motion::stats(&mouse_samples(secs)?);
+            println!(
+                "relatorios={} taxa={:.0}Hz eixo_puro={:.3} perpendicular={:.4} aspereza={:.4}",
+                st.reports, st.rate_hz, st.axis_purity, st.perpendicular_share, st.roughness
+            );
+            Ok(())
+        }
+        Cmd::MeasureClicks { secs } => {
+            let c = motion::clicks(&mouse_samples(secs)?, 0x01);
+            let min = |v: &[f64]| v.iter().copied().fold(f64::INFINITY, f64::min);
+            println!(
+                "cliques={} duracao_mediana={:.1}ms duracao_min={:.1}ms intervalo_mediano={:.1}ms intervalo_min={:.1}ms",
+                c.presses_ms.len(),
+                motion::median(&c.presses_ms),
+                if c.presses_ms.is_empty() { 0.0 } else { min(&c.presses_ms) },
+                motion::median(&c.gaps_ms),
+                if c.gaps_ms.is_empty() { 0.0 } else { min(&c.gaps_ms) },
+            );
+            Ok(())
+        }
+        Cmd::Capture { secs } => {
+            let mut last: Option<(String, Vec<u8>)> = None;
+            for r in delux_hid::capture_reports(secs, false).map_err(|e| e.to_string())? {
+                // Skip the 2 s battery heartbeat and exact repeats.
+                if r.data.first() == Some(&0x03) && r.data.get(2) == Some(&0x40) {
+                    continue;
+                }
+                if last.as_ref() == Some(&(r.source.clone(), r.data.clone())) {
+                    continue;
+                }
+                println!(
+                    "[{:8.3}s] {} {}",
+                    r.t_us as f64 / 1e6,
+                    r.source,
+                    hex::format_hex(&r.data)
+                );
+                last = Some((r.source, r.data));
+            }
+            Ok(())
+        }
         Cmd::WiredRead => {
             // (report id, declared data length) from the wired HID descriptor.
             let ids = [
@@ -259,6 +316,14 @@ fn apply(name: Option<String>, yes: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("aplicado.");
     Ok(())
+}
+
+fn mouse_samples(secs: u64) -> Result<Vec<motion::Sample>, String> {
+    Ok(delux_hid::capture_reports(secs, true)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter_map(|r| motion::parse_mouse_report(r.t_us, &r.data))
+        .collect())
 }
 
 fn parse_action(s: &str) -> Result<ButtonAction, String> {

@@ -1,8 +1,10 @@
 //! Pure encoder/decoder for the Delux M900 PRO 8K vendor HID protocol
 //! (receiver 1D57:FA65). No I/O. See docs/protocol/delux-protocol.md.
 
+pub mod event;
 pub mod frame;
 
+pub use event::{parse_event, BatteryState, Event, EventKind, MODEL_M900PRO_8K_MS4};
 pub use frame::{checksum16, frames, Frame, REPORT_LEN};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

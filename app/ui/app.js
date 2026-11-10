@@ -110,10 +110,11 @@ function statusText(s) {
   const b = s.battery ? `${s.battery[1]}%` : "";
   if (s.connection === "NoReceiver") return "Receptor não conectado";
   if (s.connection === "Asleep") return b ? `Mouse dormindo — última leitura de bateria: ${b}` : "Mouse dormindo ou desligado";
-  if (!s.battery) return "Conectado";
+  const via = s.transport === "Wired" ? "Conectado por cabo" : "Conectado pelo receptor";
+  if (!s.battery) return via;
   const st = s.battery[0];
   const extra = st === "Charging" ? " (carregando)" : st === "Full" ? " (carga completa)" : "";
-  return `Conectado — bateria ${b}${extra}`;
+  return `${via} — bateria ${b}${extra}`;
 }
 
 function render() {
@@ -236,7 +237,9 @@ function sensorTab() {
     el("h2", { textContent: "Estágios de DPI" }), table, live,
     el("h2", { textContent: "Sensor" }),
     row("Polling rate", select(POLLING, draft.polling, (v) => (draft.polling = v)),
-      el("span", { className: "muted", textContent: ["Hz2000", "Hz4000", "Hz8000"].includes(draft.polling) ? "acima de 1000 Hz o Mac não consegue medir; enviado como o driver envia" : "" })),
+      el("span", { className: "muted", textContent: !["Hz2000", "Hz4000", "Hz8000"].includes(draft.polling) ? ""
+        : state.status.transport === "Wired" ? "no cabo o mouse fica em 1000 Hz; o valor escolhido vale no receptor"
+        : "acima de 1000 Hz o Mac não consegue medir; enviado como o driver envia" })),
     row("Distância de levantamento", select([["Mm1", "1 mm"], ["Mm2", "2 mm"]], d.lod, (v) => (d.lod = v)), unverified("lod")),
     row("Ripple control", check(d.ripple, (v) => (d.ripple = v)), unverified("ripple")),
     row("Angle snapping", check(d.angle_snap, (v) => (d.angle_snap = v)), unverified("angle_snap")),

@@ -26,3 +26,16 @@ pub enum Error {
     #[error("{field} out of range: {value}")]
     OutOfRange { field: &'static str, value: i64 },
 }
+
+/// Deserialize a fixed-size array, rejecting any other length. (serde's
+/// built-in array support silently ignores extra elements.)
+pub(crate) fn exact_array<'de, D, T, const N: usize>(d: D) -> Result<[T; N], D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    let v = <Vec<T> as serde::Deserialize>::deserialize(d)?;
+    let len = v.len();
+    v.try_into()
+        .map_err(|_| serde::de::Error::custom(format!("expected {N} elements, found {len}")))
+}

@@ -28,6 +28,7 @@ pub enum Lod {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SensorConfig {
+    #[serde(deserialize_with = "crate::exact_array")]
     pub stages: [DpiStage; STAGE_COUNT],
     /// 1-based; must name an enabled stage.
     pub current_stage: u8,

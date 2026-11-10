@@ -109,7 +109,8 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_fields() {
-        let cases: [(&str, fn(&mut PowerLightConfig)); 10] = [
+        type Case = (&'static str, fn(&mut PowerLightConfig));
+        let cases: [Case; 10] = [
             ("light_mode", |c| c.light_mode = 12),
             ("breath_speed", |c| c.breath_speed = 3),
             ("breath_speed", |c| c.breath_speed = 9),

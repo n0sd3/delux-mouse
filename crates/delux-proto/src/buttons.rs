@@ -75,7 +75,9 @@ impl ButtonAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ButtonMap(pub [ButtonAction; SLOT_COUNT]);
+pub struct ButtonMap(
+    #[serde(deserialize_with = "crate::exact_array")] pub [ButtonAction; SLOT_COUNT],
+);
 
 impl ButtonMap {
     /// The vendor driver's default map.

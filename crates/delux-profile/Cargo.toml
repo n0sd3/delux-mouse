@@ -1,0 +1,13 @@
+[package]
+name = "delux-profile"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+delux-proto = { path = "../delux-proto" }
+serde.workspace = true
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

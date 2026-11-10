@@ -7,7 +7,11 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use delux_hid::Device;
-use delux_proto::{frames, parse_event, Event, MODEL_M900PRO_8K_MS4};
+use delux_proto::{
+    encode_buttons, encode_factory_reset, encode_polling, encode_power_light, encode_sensor,
+    frames, parse_event, ButtonAction, ButtonMap, Event, Lod, PollingRate, PowerLightConfig,
+    SensorConfig, MODEL_M900PRO_8K_MS4, SLOT_COUNT,
+};
 
 #[derive(Parser)]
 #[command(name = "delux", about = "Diagnóstico do Delux M900 PRO 8K")]
@@ -30,6 +34,60 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Define o polling rate (125, 250, 500, 1000, 2000, 4000, 8000).
+    SetPolling {
+        hz: u16,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Define os estágios de DPI (ex.: 400,3200,12800); demais opções no padrão.
+    SetDpi {
+        #[arg(value_delimiter = ',')]
+        dpis: Vec<u16>,
+        #[arg(long, default_value_t = 1)]
+        stage: u8,
+        #[arg(long)]
+        lod2: bool,
+        #[arg(long)]
+        ripple: bool,
+        #[arg(long)]
+        angle_snap: bool,
+        #[arg(long)]
+        motion_sync: bool,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Define sleep, debounce e luz; o que não for passado fica no padrão.
+    SetPower {
+        #[arg(long)]
+        sleep: Option<u8>,
+        #[arg(long)]
+        debounce: Option<u8>,
+        #[arg(long)]
+        light_mode: Option<u8>,
+        #[arg(long)]
+        brightness: Option<u8>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Envia o mapa de fábrica com um slot alterado. Ação: left, right, middle,
+    /// back, forward, dpi, off, key:<usage hex>, raw:<3 bytes hex>.
+    SetButton {
+        slot: usize,
+        action: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Envia o mapa de botões de fábrica.
+    ResetButtons {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Reset de fábrica (cmd 0x0C).
+    Reset {
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -46,7 +104,76 @@ fn run(cli: Cli) -> Result<(), String> {
     match cli.cmd {
         Cmd::Listen { secs } => listen(secs),
         Cmd::SendRaw { hex, yes } => send(&hex::parse_hex(&hex)?, yes),
+        Cmd::SetPolling { hz, yes } => {
+            let rate = PollingRate::from_hz(hz).ok_or(format!("polling inválido: {hz}"))?;
+            send(&encode_polling(rate), yes)
+        }
+        Cmd::SetDpi { dpis, stage, lod2, ripple, angle_snap, motion_sync, yes } => {
+            let mut cfg = SensorConfig::default_profile();
+            if dpis.is_empty() || dpis.len() > cfg.stages.len() {
+                return Err("informe de 1 a 8 valores de DPI".into());
+            }
+            for (i, s) in cfg.stages.iter_mut().enumerate() {
+                s.enabled = i < dpis.len();
+                if let Some(d) = dpis.get(i) {
+                    s.dpi = *d;
+                }
+            }
+            cfg.current_stage = stage;
+            cfg.lod = if lod2 { Lod::Mm2 } else { Lod::Mm1 };
+            cfg.ripple = ripple;
+            cfg.angle_snap = angle_snap;
+            cfg.motion_sync = motion_sync;
+            send(&encode_sensor(&cfg).map_err(|e| e.to_string())?, yes)
+        }
+        Cmd::SetPower { sleep, debounce, light_mode, brightness, yes } => {
+            let mut cfg = PowerLightConfig::default_profile();
+            cfg.sleep_min = sleep.unwrap_or(cfg.sleep_min);
+            cfg.debounce_ms = debounce.unwrap_or(cfg.debounce_ms);
+            cfg.light_mode = light_mode.unwrap_or(cfg.light_mode);
+            cfg.brightness = brightness.unwrap_or(cfg.brightness);
+            send(&encode_power_light(&cfg).map_err(|e| e.to_string())?, yes)
+        }
+        Cmd::SetButton { slot, action, yes } => {
+            if slot == 0 || slot >= SLOT_COUNT {
+                return Err(format!("slot deve ser 1..{}", SLOT_COUNT - 1));
+            }
+            let mut map = ButtonMap::factory();
+            map.0[slot] = parse_action(&action)?;
+            send(&encode_buttons(&map).map_err(|e| e.to_string())?, yes)
+        }
+        Cmd::ResetButtons { yes } => {
+            send(&encode_buttons(&ButtonMap::factory()).map_err(|e| e.to_string())?, yes)
+        }
+        Cmd::Reset { yes } => send(&encode_factory_reset(), yes),
     }
+}
+
+fn parse_action(s: &str) -> Result<ButtonAction, String> {
+    Ok(match s {
+        "left" => ButtonAction::Left,
+        "right" => ButtonAction::Right,
+        "middle" => ButtonAction::Middle,
+        "back" => ButtonAction::Back,
+        "forward" => ButtonAction::Forward,
+        "dpi" => ButtonAction::DpiCycle,
+        "off" => ButtonAction::Disabled,
+        _ => {
+            if let Some(h) = s.strip_prefix("key:") {
+                match hex::parse_hex(h)?.as_slice() {
+                    [usage] => ButtonAction::Key { modifiers: 0, usage: *usage },
+                    _ => return Err("key:<1 byte hex>".into()),
+                }
+            } else if let Some(h) = s.strip_prefix("raw:") {
+                match hex::parse_hex(h)?.as_slice() {
+                    [a, b, c] => ButtonAction::Raw([*a, *b, *c]),
+                    _ => return Err("raw:<3 bytes hex>".into()),
+                }
+            } else {
+                return Err(format!("ação desconhecida: {s}"));
+            }
+        }
+    })
 }
 
 fn listen(secs: u64) -> Result<(), String> {

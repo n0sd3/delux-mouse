@@ -11,7 +11,7 @@ pub fn parse_hex(input: &str) -> Result<Vec<u8>, String> {
     if digits.is_empty() {
         return Err("hex vazio".into());
     }
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return Err(format!("hex com número ímpar de dígitos: {}", digits.len()));
     }
     (0..digits.len())

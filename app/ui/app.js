@@ -30,6 +30,7 @@ const ACTIONS = [
   ["Desativado", "Disabled"],
 ];
 const SCRIPT_SLOTS = [3, 6, 7]; // physical buttons a script may take on this mouse
+let scriptDraft = {};   // slot -> { label, command } typed but not yet saved
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const active = () => state.store.profiles.find((p) => p.name === state.store.active);
@@ -70,6 +71,13 @@ function statusText(s) {
 }
 
 function render() {
+  renderChrome();
+  renderTab();
+}
+
+// Header, banners and Apply button. Safe to call on every status event:
+// it never touches the tab, so nothing the user is typing is lost.
+function renderChrome() {
   const s = state.status;
   $("#conn").textContent = statusText(s);
   const sel = $("#profile");
@@ -82,13 +90,20 @@ function render() {
   $("#apply").textContent = dirty() ? "Aplicar" : pending ? "Aplicar pendências" : "Aplicado";
 
   const banners = [];
-  if (state.load_warning) banners.push(el("div", { className: "banner err", textContent: state.load_warning }));
+  if (state.load_warning) {
+    const ok = el("button", { textContent: "Entendi" });
+    ok.onclick = () => invoke("dismiss_warning").then(() => refresh(true));
+    banners.push(el("div", { className: "banner err" }, state.load_warning, ok));
+  }
   if (unsupported) banners.push(el("div", { className: "banner err", textContent: `Este modelo de mouse (0x${s.model.toString(16)}) não é suportado. A bateria é mostrada, mas nenhum ajuste será enviado.` }));
   if (!state.store.last_applied) banners.push(el("div", { className: "banner", textContent: "Os valores mostrados são do perfil, não do mouse — o mouse não informa sua configuração. Aplicar substitui o que está no mouse; ajuste DPI e polling antes se quiser manter os seus." }));
   else if (pending && !dirty()) banners.push(el("div", { className: "banner", textContent: "Há ajustes deste perfil que ainda não chegaram ao mouse. Mexa o mouse e clique em Aplicar pendências." }));
   if (message) banners.push(el("div", { className: "banner" + (message.err ? " err" : ""), textContent: message.text }));
   $("#banners").replaceChildren(...banners);
+}
 
+function renderTab() {
+  const unsupported = state.status.model !== null && state.status.model !== 0x30;
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   const body = { sensor: sensorTab, buttons: buttonsTab, scripts: scriptsTab, light: lightTab, power: powerTab }[tab]();
   body.classList.toggle("disabled-all", unsupported);
@@ -130,6 +145,8 @@ function sensorTab() {
     table.append(el("tr", {},
       el("td", { textContent: `${i + 1}` }),
       el("td", {}, check(st.enabled, (v) => {
+        // At least one stage must stay on.
+        if (!v && d.stages.filter((x) => x.enabled).length === 1) return;
         st.enabled = v;
         if (!d.stages[d.current_stage - 1].enabled) d.current_stage = d.stages.findIndex((x) => x.enabled) + 1;
       })),
@@ -173,14 +190,23 @@ function scriptsTab() {
     el("div", { className: "muted", textContent: "O botão passa a rodar o comando no Mac e perde a função original enquanto estiver atribuído. Só funciona com este app aberto." }));
   for (const slot of SCRIPT_SLOTS) {
     const b = active().scripts.find((s) => s.slot === slot);
-    const label = el("input", { type: "text", placeholder: "Nome (ex.: Calculadora)", value: b?.label ?? "" });
-    const cmd = el("input", { type: "text", placeholder: "Comando (ex.: open -a Calculator)", value: b?.command ?? "" });
+    const typed = (scriptDraft[slot] ??= { label: b?.label ?? "", command: b?.command ?? "" });
+    const label = el("input", { type: "text", placeholder: "Nome (ex.: Calculadora)", value: typed.label });
+    const cmd = el("input", { type: "text", placeholder: "Comando (ex.: open -a Calculator)", value: typed.command });
+    label.oninput = () => (typed.label = label.value);
+    cmd.oninput = () => (typed.command = cmd.value);
     const save = el("button", { textContent: b ? "Salvar" : "Atribuir" });
-    save.onclick = () => act(() => invoke("bind_script", { profile: state.store.active, slot, command: cmd.value, label: label.value }), "Script atribuído.");
+    save.onclick = () => {
+      delete scriptDraft[slot];
+      act(() => invoke("bind_script", { profile: state.store.active, slot, command: cmd.value, label: label.value }), "Script atribuído.");
+    };
     const kids = [el("div", { className: "grow" }, label), el("div", { className: "grow" }, cmd), save];
     if (b) {
       const rm = el("button", { className: "danger", textContent: "Remover" });
-      rm.onclick = () => act(() => invoke("unbind_script", { profile: state.store.active, slot }), "Script removido; botão voltou à função original.");
+      rm.onclick = () => {
+        delete scriptDraft[slot];
+        act(() => invoke("unbind_script", { profile: state.store.active, slot }), "Script removido; botão voltou à função original.");
+      };
       kids.push(rm);
     }
     box.append(row(state.slot_names[slot], ...kids));
@@ -265,6 +291,7 @@ $("#apply").onclick = async () => {
 };
 $("#profile").onchange = (e) => {
   if (dirty() && !confirm("Descartar as mudanças não aplicadas deste perfil?")) return render();
+  scriptDraft = {};
   const name = e.target.value;
   act(() => invoke("set_active_profile", { name })).then(() => refresh());
 };
@@ -279,7 +306,15 @@ $("#delProfile").onclick = () => {
 };
 document.querySelectorAll("nav button").forEach((b) => (b.onclick = () => { tab = b.dataset.tab; render(); }));
 
-listen("status", (e) => { if (state) { state.status = e.payload; render(); } });
-listen("store-changed", () => refresh());
-listen("script-run", () => { if (tab === "scripts") setTimeout(() => refresh(true), 400); });
+listen("status", (e) => {
+  if (!state) return;
+  const stageChanged = state.status.dpi_stage !== e.payload.dpi_stage;
+  const modelChanged = state.status.model !== e.payload.model;
+  state.status = e.payload;
+  renderChrome();
+  // Only the Sensor tab shows live status, and it holds no free-text fields.
+  if (modelChanged || (stageChanged && tab === "sensor")) renderTab();
+});
+listen("store-changed", () => { scriptDraft = {}; refresh(); });
+listen("script-run", () => { if (tab === "scripts") setTimeout(renderTab, 600); });
 refresh();

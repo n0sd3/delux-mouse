@@ -38,19 +38,28 @@ fn notify(app: &AppHandle, title: &str, body: &str) {
 }
 
 /// Switch profile from the menu bar; tell the user if the mouse could not take it.
+/// Runs on its own thread: sending a profile takes seconds and must not
+/// freeze the menu bar.
 pub fn switch_profile(app: &AppHandle, name: &str) {
-    let result = app.state::<Ctx>().controller.set_active_profile(name);
-    tray::refresh_menu(app);
-    let _ = app.emit("store-changed", ());
-    match result {
-        Ok(_) => {}
-        Err(ApplyError::Asleep) => notify(
-            app,
-            "Perfil pendente",
-            &format!("“{name}” será aplicado quando você mexer o mouse e clicar em Aplicar."),
-        ),
-        Err(e) => notify(app, "Perfil não aplicado", &e.to_string()),
-    }
+    let (app, name) = (app.clone(), name.to_string());
+    std::thread::spawn(move || {
+        let ctx = app.state::<Ctx>();
+        let result = ctx.controller.set_active_profile(&name);
+        tray::refresh_menu(&app);
+        let _ = app.emit("store-changed", ());
+        match result {
+            Ok(_) => {}
+            Err(ApplyError::Asleep) => notify(
+                &app,
+                "Perfil pendente",
+                &format!("“{name}” será aplicado quando você mexer o mouse e clicar em Aplicar."),
+            ),
+            Err(e) => notify(&app, "Perfil não aplicado", &e.to_string()),
+        }
+        if let Some(w) = ctx.controller.warning() {
+            notify(&app, "Delux Mouse", &w);
+        }
+    });
 }
 
 pub fn sync_autostart(app: &AppHandle, enabled: bool) {
@@ -99,7 +108,10 @@ fn main() {
                     if event.state() != ShortcutState::Pressed {
                         return;
                     }
-                    let ctx = app.state::<Ctx>();
+                    // A key can fire before setup has finished.
+                    let Some(ctx) = app.try_state::<Ctx>() else {
+                        return;
+                    };
                     let binding = hotkeys::usage_of(shortcut)
                         .and_then(|u| ctx.controller.script_for_usage(u));
                     if let Some(binding) = binding {
@@ -129,6 +141,12 @@ fn main() {
                 last_pct: Mutex::new(None),
             });
             tray::create(&handle)?;
+            // The poll thread may have published its first status before the tray existed.
+            let ctx = handle.state::<Ctx>();
+            tray::set_status(&handle, &ctx.svc.status());
+            if let Some(w) = ctx.controller.warning() {
+                notify(&handle, "Delux Mouse", &w);
+            }
             sync_autostart(&handle, autostart);
             Ok(())
         })
@@ -151,7 +169,16 @@ fn main() {
             commands::bind_script,
             commands::unbind_script,
             commands::script_log,
+            commands::dismiss_warning,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Delux Mouse");
+        .build(tauri::generate_context!())
+        .expect("error while building Delux Mouse")
+        .run(|app, event| {
+            // Covers every way out (menu, Cmd+Q, logout): no script outlives the app.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(ctx) = app.try_state::<Ctx>() {
+                    ctx.runner.kill_all();
+                }
+            }
+        });
 }

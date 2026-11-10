@@ -2,8 +2,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use delux_profile::ScriptBinding;
 use serde::Serialize;
@@ -12,12 +14,18 @@ use serde::Serialize;
 pub const LOG_CAP: usize = 64 * 1024;
 const LOG_LEN: usize = 50;
 
-/// HID usages of F13..=F24: keys no Mac keyboard has.
-const HOTKEY_USAGES: std::ops::RangeInclusive<u8> = 0x68..=0x73;
+/// Slots that may carry a script, and the key each one emits: slot 3 → F13
+/// (HID usage 0x68) … slot 14 → F24 (0x73). The key is fixed per slot so a
+/// button means the same key in every profile. (Full-size Apple keyboards
+/// have F13–F19; pressing those would run the script too.)
+const FIRST_SCRIPT_SLOT: usize = 3;
+const LAST_SCRIPT_SLOT: usize = 14;
+const F13_USAGE: u8 = 0x68;
 
-/// First F13..F24 usage not in `used`.
-pub fn next_free_usage(used: &[u8]) -> Option<u8> {
-    HOTKEY_USAGES.into_iter().find(|u| !used.contains(u))
+pub fn usage_for_slot(slot: usize) -> Option<u8> {
+    (FIRST_SCRIPT_SLOT..=LAST_SCRIPT_SLOT)
+        .contains(&slot)
+        .then(|| F13_USAGE + (slot - FIRST_SCRIPT_SLOT) as u8)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -72,13 +80,15 @@ impl ScriptRunner {
             output: String::new(),
             truncated: false,
         };
-        // Login shell so the user's PATH applies; stderr joins stdout.
+        // Login shell so the user's PATH applies; stderr joins stdout. Own
+        // process group so everything the script starts can be killed with it.
         let spawned = Command::new("/bin/zsh")
             .arg("-lc")
             .arg(format!("{{ {}\n}} 2>&1", binding.command))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .process_group(0)
             .spawn();
         let mut child = match spawned {
             Ok(c) => c,
@@ -96,28 +106,38 @@ impl ScriptRunner {
         inner.running.insert(slot, child.clone());
         drop(inner);
 
+        // Reader: collects output until the pipe closes, which may be long
+        // after the shell exits if it left something running in the background.
+        let captured = Arc::new(Mutex::new((Vec::new(), false)));
+        let sink = captured.clone();
+        std::thread::spawn(move || {
+            let Some(mut out) = stdout else { return };
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = out.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let mut c = sink.lock().unwrap();
+                let room = LOG_CAP - c.0.len();
+                c.0.extend_from_slice(&buf[..n.min(room)]);
+                c.1 |= n > room;
+            }
+        });
+
+        // Waiter: the run ends when the shell exits, not when the pipe closes.
         let shared = self.inner.clone();
         std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            let mut truncated = false;
-            if let Some(mut out) = stdout {
-                let mut buf = [0u8; 8192];
-                while let Ok(n) = out.read(&mut buf) {
-                    if n == 0 {
-                        break;
-                    }
-                    let room = LOG_CAP - kept.len();
-                    kept.extend_from_slice(&buf[..n.min(room)]);
-                    truncated |= n > room;
+            let exit = loop {
+                match child.lock().unwrap().try_wait() {
+                    Ok(Some(status)) => break status.code().unwrap_or(-1),
+                    Ok(None) => {}
+                    Err(_) => break -1,
                 }
-            }
-            let exit = child
-                .lock()
-                .unwrap()
-                .wait()
-                .ok()
-                .and_then(|s| s.code())
-                .unwrap_or(-1);
+                std::thread::sleep(Duration::from_millis(25));
+            };
+            // Let the reader drain what the shell wrote just before exiting.
+            std::thread::sleep(Duration::from_millis(100));
+            let (kept, truncated) = captured.lock().unwrap().clone();
             let mut inner = shared.lock().unwrap();
             inner.running.remove(&slot);
             if let Some((_, rec)) = inner.log.iter_mut().find(|(i, _)| *i == id) {
@@ -140,10 +160,15 @@ impl ScriptRunner {
             .collect()
     }
 
-    /// Kill every running script (app shutdown).
+    /// Kill every running script and whatever it started (app shutdown).
     pub fn kill_all(&self) {
         for child in self.inner.lock().unwrap().running.values() {
-            let _ = child.lock().unwrap().kill();
+            let mut child = child.lock().unwrap();
+            // Negative pid = the script's whole process group.
+            let _ = Command::new("/bin/kill")
+                .args(["-TERM", "--", &format!("-{}", child.id())])
+                .status();
+            let _ = child.kill();
         }
     }
 
@@ -156,7 +181,7 @@ impl ScriptRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     fn binding(slot: usize, command: &str) -> ScriptBinding {
         ScriptBinding {
@@ -251,10 +276,26 @@ mod tests {
     }
 
     #[test]
-    fn next_free_usage_walks_f13_to_f24() {
-        assert_eq!(next_free_usage(&[]), Some(0x68));
-        assert_eq!(next_free_usage(&[0x68, 0x6A]), Some(0x69));
-        let all: Vec<u8> = (0x68..=0x73).collect();
-        assert_eq!(next_free_usage(&all), None);
+    fn usage_for_slot_maps_3_to_14_onto_f13_to_f24() {
+        assert_eq!(usage_for_slot(3), Some(0x68));
+        assert_eq!(usage_for_slot(7), Some(0x6C));
+        assert_eq!(usage_for_slot(14), Some(0x73));
+        assert_eq!(usage_for_slot(2), None);
+        assert_eq!(usage_for_slot(15), None);
+    }
+
+    #[test]
+    fn background_child_does_not_hold_the_button() {
+        // `server &` keeps the output pipe open long after the shell exits.
+        let r = ScriptRunner::default();
+        assert!(r.trigger(&binding(7, "sleep 30 & echo started")));
+        let rec = wait_done(&r);
+        assert_eq!(rec.exit, Some(0));
+        assert!(rec.output.contains("started"), "{:?}", rec.output);
+        assert!(
+            r.trigger(&binding(7, "true")),
+            "button is free once the shell exits"
+        );
+        r.kill_all();
     }
 }

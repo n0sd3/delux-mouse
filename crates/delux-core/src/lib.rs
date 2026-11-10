@@ -4,6 +4,7 @@ pub mod controller;
 pub mod present;
 pub mod scripts;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,6 +19,16 @@ use serde::Serialize;
 /// No event for longer than this means the mouse is asleep (or off) and
 /// would silently miss a command.
 pub const AWAKE_WINDOW_MS: u64 = 6000;
+
+/// A write needs a fresher sign of life than the status display: the mouse
+/// reports every 2 s while awake, so 3 s without a report means it is going
+/// to sleep. There is no ack, so a command sent then would be lost silently.
+pub const WRITE_WINDOW_MS: u64 = 3000;
+
+/// After each section, how long to wait for the mouse's next report as
+/// evidence that it was still listening.
+const CONFIRM_POLLS: u32 = 12;
+const CONFIRM_POLL_MS: i32 = 250;
 
 /// The transport, as the service needs it.
 pub trait Link: Send {
@@ -107,6 +118,8 @@ struct Inner {
     clock: Arc<dyn Clock>,
     on_change: OnChange,
     link: Mutex<Option<Box<dyn Link>>>,
+    /// Mirrors `link.is_some()` so `status()` never waits on a running apply.
+    connected: AtomicBool,
     seen: Mutex<Seen>,
 }
 
@@ -124,6 +137,7 @@ impl DeviceService {
                 clock,
                 on_change,
                 link: Mutex::new(None),
+                connected: AtomicBool::new(false),
                 seen: Mutex::new(Seen::default()),
             }),
         }
@@ -158,7 +172,7 @@ impl DeviceService {
             if link.is_none() {
                 *link = (self.inner.opener)().ok();
             }
-            match link.as_ref().map(|l| l.read_event(100)) {
+            let connected = match link.as_ref().map(|l| l.read_event(100)) {
                 Some(Ok(Some(ev))) => {
                     self.record(ev);
                     true
@@ -169,7 +183,9 @@ impl DeviceService {
                     false
                 }
                 None => false,
-            }
+            };
+            self.inner.connected.store(connected, Ordering::SeqCst);
+            connected
         };
         self.publish();
         connected
@@ -202,11 +218,11 @@ impl DeviceService {
     }
 
     pub fn status(&self) -> Status {
-        let has_link = self.inner.link.lock().unwrap().is_some();
+        let has_link = self.inner.connected.load(Ordering::SeqCst);
         let seen = self.inner.seen.lock().unwrap();
         let connection = if !has_link {
             Connection::NoReceiver
-        } else if self.is_awake(&seen) {
+        } else if self.heard_within(&seen, AWAKE_WINDOW_MS) {
             Connection::Awake
         } else {
             Connection::Asleep
@@ -220,9 +236,14 @@ impl DeviceService {
         }
     }
 
-    fn is_awake(&self, seen: &Seen) -> bool {
+    fn heard_within(&self, seen: &Seen, window_ms: u64) -> bool {
         seen.last_event_ms
-            .is_some_and(|t| self.inner.clock.now_ms().saturating_sub(t) <= AWAKE_WINDOW_MS)
+            .is_some_and(|t| self.inner.clock.now_ms().saturating_sub(t) <= window_ms)
+    }
+
+    fn drop_link(&self, link: &mut Option<Box<dyn Link>>) {
+        *link = None;
+        self.inner.connected.store(false, Ordering::SeqCst);
     }
 
     /// Send the given sections of `profile`, in firmware order.
@@ -247,7 +268,14 @@ impl DeviceService {
     /// vendor driver, it is followed by every section of the factory profile.
     pub fn factory_reset(&self) -> Result<(), ApplyError> {
         let reset = frames(&encode_factory_reset()).expect("constant packet");
-        self.send_all(vec![reset]).map_err(|(_, e)| e)?;
+        self.send_all(vec![reset]).map_err(|(_, e)| match e {
+            ApplyError::Io { message, .. } => ApplyError::Io {
+                sent: vec![],
+                pending: Section::ALL.to_vec(),
+                message,
+            },
+            gate => gate,
+        })?;
         self.apply(&Profile::factory("factory"), &Section::ALL)
     }
 
@@ -271,27 +299,33 @@ impl DeviceService {
         })
     }
 
-    /// Send packets one by one, re-checking every gate before each.
-    /// On failure returns how many were sent.
+    /// Send packets one by one, re-checking every gate before each and
+    /// waiting for a sign of life after each. On failure returns how many
+    /// packets are known to have reached an awake mouse.
     fn send_all(&self, packets: Vec<Vec<Frame>>) -> Result<(), (usize, ApplyError)> {
         let mut link = self.inner.link.lock().unwrap();
         for (done, frames) in packets.iter().enumerate() {
             let fail = |e| (done, e);
-            let l = link.as_ref().ok_or(fail(ApplyError::NoReceiver))?;
-            // Pick up heartbeats that arrived while we held the link.
+            let io = |message: String| ApplyError::Io {
+                sent: vec![],
+                pending: vec![],
+                message,
+            };
+            // Pick up reports that arrived while we held the link.
             loop {
-                match l.read_event(0) {
-                    Ok(Some(ev)) => self.record(ev),
-                    Ok(None) => break,
-                    Err(_) => {
-                        *link = None;
+                match link.as_ref().map(|l| l.read_event(0)) {
+                    Some(Ok(Some(ev))) => self.record(ev),
+                    Some(Ok(None)) => break,
+                    Some(Err(_)) => {
+                        self.drop_link(&mut link);
                         return Err(fail(ApplyError::NoReceiver));
                     }
+                    None => return Err(fail(ApplyError::NoReceiver)),
                 }
             }
             {
                 let seen = self.inner.seen.lock().unwrap();
-                if !self.is_awake(&seen) {
+                if !self.heard_within(&seen, WRITE_WINDOW_MS) {
                     return Err(fail(ApplyError::Asleep));
                 }
                 match seen.model {
@@ -300,16 +334,32 @@ impl DeviceService {
                     None => return Err(fail(ApplyError::Asleep)),
                 }
             }
-            if let Err(e) = link.as_ref().expect("checked above").write_frames(frames) {
-                *link = None;
-                return Err((
-                    done,
-                    ApplyError::Io {
-                        sent: vec![],
-                        pending: vec![],
-                        message: e.to_string(),
-                    },
-                ));
+            let l = link.as_ref().expect("checked above");
+            if let Err(e) = l.write_frames(frames) {
+                self.drop_link(&mut link);
+                return Err(fail(io(e.to_string())));
+            }
+            // No ack exists: the next report is the only evidence the mouse
+            // was still awake to take this packet.
+            let mut confirmed = false;
+            for _ in 0..CONFIRM_POLLS {
+                match l.read_event(CONFIRM_POLL_MS) {
+                    Ok(Some(ev)) => {
+                        self.record(ev);
+                        confirmed = true;
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.drop_link(&mut link);
+                        return Err(fail(io(e.to_string())));
+                    }
+                }
+            }
+            if !confirmed {
+                return Err(fail(io(
+                    "o mouse parou de responder logo após o envio (dormiu?)".to_string(),
+                )));
             }
         }
         Ok(())
@@ -480,26 +530,71 @@ mod tests {
     }
 
     #[test]
-    fn sleep_mid_apply_keeps_rest_pending() {
+    fn section_without_a_heartbeat_after_it_is_not_counted_as_sent() {
+        // No ack exists; the only evidence a section landed is that the mouse
+        // is still talking right after it.
         let (world, svc) = setup();
         feed(&world, &svc, battery(0x30, 84));
         world.heartbeat_after_write.store(false, Ordering::SeqCst);
-        world.advance_on_write_ms.store(7000, Ordering::SeqCst);
         let p = Profile::default_named("t");
         match svc.apply(&p, &Section::ALL) {
             Err(ApplyError::Io { sent, pending, .. }) => {
-                assert_eq!(sent, vec![Section::Sensor]);
-                assert_eq!(
-                    pending,
-                    vec![Section::Polling, Section::PowerLight, Section::Buttons]
-                );
+                assert_eq!(sent, vec![]);
+                assert_eq!(pending, Section::ALL.to_vec());
             }
             other => panic!("unexpected: {other:?}"),
         }
         assert_eq!(
             *world.written.lock().unwrap(),
-            frames(&encode_sensor(&p.sensor).unwrap()).unwrap()
+            frames(&encode_sensor(&p.sensor).unwrap()).unwrap(),
+            "stops after the unconfirmed section"
         );
+    }
+
+    #[test]
+    fn event_older_than_write_window_refuses_even_if_status_says_awake() {
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        world.clock.advance(4000);
+        assert_eq!(svc.status().connection, Connection::Awake);
+        assert_eq!(
+            svc.apply(&Profile::default_named("t"), &Section::ALL),
+            Err(ApplyError::Asleep)
+        );
+        assert!(world.written.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn factory_reset_failing_on_the_reset_packet_reports_everything_pending() {
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        world.fail_write_at.store(1, Ordering::SeqCst);
+        match svc.factory_reset() {
+            Err(ApplyError::Io { sent, pending, .. }) => {
+                assert_eq!(sent, vec![]);
+                assert_eq!(pending, Section::ALL.to_vec());
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn status_does_not_wait_for_a_running_apply() {
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        let guard = svc.inner.link.lock().unwrap(); // what apply holds while sending
+        let svc2 = svc.clone();
+        let t = std::thread::spawn(move || svc2.status().connection);
+        let start = std::time::Instant::now();
+        while !t.is_finished() {
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "status() blocked on the link"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(guard);
+        assert_eq!(t.join().unwrap(), Connection::Awake);
     }
 
     #[test]

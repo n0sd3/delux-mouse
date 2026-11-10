@@ -50,6 +50,7 @@ pub struct UiState {
     pending: Vec<Section>,
     slot_names: Vec<&'static str>,
     unverified: Vec<&'static str>,
+    /// Shown until the user dismisses it.
     load_warning: Option<String>,
 }
 
@@ -94,7 +95,7 @@ pub fn get_state(ctx: State<Ctx>) -> UiState {
         store,
         slot_names: SLOT_NAMES.to_vec(),
         unverified: UNVERIFIED.to_vec(),
-        load_warning: ctx.controller.take_load_warning(),
+        load_warning: ctx.controller.warning(),
     }
 }
 
@@ -103,12 +104,12 @@ pub fn save_profile(ctx: State<Ctx>, profile: Profile) -> Result<(), Vec<String>
     ctx.controller.save_profile(profile)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn apply_profile(ctx: State<Ctx>, name: String) -> Result<Vec<Section>, ApplyFailure> {
     Ok(ctx.controller.apply_profile(&name)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_active_profile(
     app: AppHandle,
     ctx: State<Ctx>,
@@ -133,7 +134,7 @@ pub fn delete_profile(app: AppHandle, ctx: State<Ctx>, name: String) -> Result<(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn factory_reset(ctx: State<Ctx>) -> Result<(), ApplyFailure> {
     Ok(ctx.controller.factory_reset()?)
 }
@@ -145,7 +146,7 @@ pub fn update_settings(app: AppHandle, ctx: State<Ctx>, settings: Settings) -> R
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bind_script(
     ctx: State<Ctx>,
     profile: String,
@@ -156,7 +157,7 @@ pub fn bind_script(
     ctx.controller.bind_script(&profile, slot, &command, &label)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unbind_script(ctx: State<Ctx>, profile: String, slot: usize) -> Result<(), String> {
     ctx.controller.unbind_script(&profile, slot)
 }
@@ -164,4 +165,9 @@ pub fn unbind_script(ctx: State<Ctx>, profile: String, slot: usize) -> Result<()
 #[tauri::command]
 pub fn script_log(ctx: State<Ctx>) -> Vec<RunRecord> {
     ctx.runner.log()
+}
+
+#[tauri::command]
+pub fn dismiss_warning(ctx: State<Ctx>) {
+    ctx.controller.dismiss_warning();
 }

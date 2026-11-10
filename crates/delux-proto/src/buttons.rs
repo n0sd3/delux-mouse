@@ -22,7 +22,10 @@ pub enum ButtonAction {
     DpiUp,
     DpiDown,
     /// HID modifier bitmask + HID keyboard usage.
-    Key { modifiers: u8, usage: u8 },
+    Key {
+        modifiers: u8,
+        usage: u8,
+    },
     /// Media / system function code, 0x15..=0x26.
     Media(u8),
     /// Any other firmware code, passed through untouched.
@@ -101,7 +104,10 @@ impl ButtonMap {
 /// can never be left without a primary button.
 pub fn encode_buttons(map: &ButtonMap) -> Result<Vec<u8>, Error> {
     if map.0[0] != ButtonAction::Left {
-        return Err(Error::OutOfRange { field: "slot 0 must stay left click", value: 0 });
+        return Err(Error::OutOfRange {
+            field: "slot 0 must stay left click",
+            value: 0,
+        });
     }
     let mut p = vec![0u8; 0x3B];
     p[..3].copy_from_slice(&[0x08, 0x3B, 0x01]);
@@ -120,7 +126,14 @@ mod tests {
 
     #[test]
     fn key_bytes() {
-        assert_eq!(ButtonAction::Key { modifiers: 0, usage: 0x68 }.to_bytes(), [0x11, 0x00, 0x68]);
+        assert_eq!(
+            ButtonAction::Key {
+                modifiers: 0,
+                usage: 0x68
+            }
+            .to_bytes(),
+            [0x11, 0x00, 0x68]
+        );
     }
 
     #[test]
@@ -139,7 +152,10 @@ mod tests {
             ButtonAction::DpiCycle,
             ButtonAction::DpiUp,
             ButtonAction::DpiDown,
-            ButtonAction::Key { modifiers: 0x01, usage: 0x06 },
+            ButtonAction::Key {
+                modifiers: 0x01,
+                usage: 0x06,
+            },
             ButtonAction::Media(0x18),
             ButtonAction::Raw([0x29, 0x00, 0x03]),
         ];
@@ -154,7 +170,10 @@ mod tests {
         assert_eq!(ButtonAction::Back.to_bytes(), [0x05, 0, 0]);
         assert_eq!(ButtonAction::Forward.to_bytes(), [0x06, 0, 0]);
         assert_eq!(ButtonAction::DpiCycle.to_bytes(), [0x0D, 0, 0]);
-        assert_eq!(ButtonAction::from_bytes([0x1B, 0, 0]), ButtonAction::Media(0x1B));
+        assert_eq!(
+            ButtonAction::from_bytes([0x1B, 0, 0]),
+            ButtonAction::Media(0x1B)
+        );
     }
 
     #[test]
@@ -177,7 +196,10 @@ mod tests {
         m.0[0] = ButtonAction::Disabled;
         assert_eq!(
             encode_buttons(&m),
-            Err(Error::OutOfRange { field: "slot 0 must stay left click", value: 0 })
+            Err(Error::OutOfRange {
+                field: "slot 0 must stay left click",
+                value: 0
+            })
         );
     }
 }

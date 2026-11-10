@@ -16,7 +16,10 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { low_battery_pct: 20, autostart: true }
+        Settings {
+            low_battery_pct: 20,
+            autostart: true,
+        }
     }
 }
 
@@ -30,6 +33,10 @@ pub struct Store {
     /// then nothing shown in the UI reflects the mouse.
     #[serde(default)]
     pub last_applied: Option<Profile>,
+    /// Sections of `last_applied` that did not actually reach the mouse
+    /// (an Apply that stopped partway).
+    #[serde(default)]
+    pub unsent: Vec<crate::Section>,
 }
 
 impl Default for Store {
@@ -39,6 +46,7 @@ impl Default for Store {
             settings: Settings::default(),
             profiles: vec![Profile::default_named(DEFAULT_PROFILE_NAME)],
             last_applied: None,
+            unsent: Vec::new(),
         }
     }
 }
@@ -66,7 +74,8 @@ impl Store {
             if self.profiles[..i].iter().any(|q| q.name == p.name) {
                 return Err(format!("perfil {:?} duplicado", p.name));
             }
-            p.validate().map_err(|e| format!("perfil {:?}: {}", p.name, e.join("; ")))?;
+            p.validate()
+                .map_err(|e| format!("perfil {:?}: {}", p.name, e.join("; ")))?;
         }
         if !(1..=100).contains(&self.settings.low_battery_pct) {
             return Err("limiar de bateria fora de 1..100".into());
@@ -87,7 +96,10 @@ pub fn load(path: &Path) -> LoadOutcome {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return LoadOutcome { store: Store::default(), warning: None }
+            return LoadOutcome {
+                store: Store::default(),
+                warning: None,
+            }
         }
         Err(e) => {
             return LoadOutcome {
@@ -100,7 +112,10 @@ pub fn load(path: &Path) -> LoadOutcome {
         .map_err(|e| e.message().to_string())
         .and_then(|s| s.validate().map(|()| s));
     match parsed {
-        Ok(store) => LoadOutcome { store, warning: None },
+        Ok(store) => LoadOutcome {
+            store,
+            warning: None,
+        },
         Err(reason) => {
             let mut bad = path.as_os_str().to_owned();
             bad.push(".bad");
@@ -114,7 +129,10 @@ pub fn load(path: &Path) -> LoadOutcome {
             } else {
                 format!("Arquivo de perfis inválido ({reason}). Perfis padrão carregados.")
             };
-            LoadOutcome { store: Store::default(), warning: Some(warning) }
+            LoadOutcome {
+                store: Store::default(),
+                warning: Some(warning),
+            }
         }
     }
 }
@@ -134,7 +152,9 @@ pub fn save(path: &Path, store: &Store) -> std::io::Result<()> {
 
 /// `~/Library/Application Support/delux-mouse/profiles.toml`
 pub fn default_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
     home.join("Library/Application Support/delux-mouse/profiles.toml")
 }
 
@@ -177,7 +197,10 @@ mod tests {
         let out = load(&path);
         assert_eq!(out.store, Store::default());
         assert!(out.warning.is_some());
-        assert_eq!(std::fs::read_to_string(dir.path().join("profiles.toml.bad")).unwrap(), "{{{");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("profiles.toml.bad")).unwrap(),
+            "{{{"
+        );
     }
 
     fn assert_rejected(edit: impl Fn(&str) -> String) {
@@ -189,7 +212,10 @@ mod tests {
         let out = load(&path);
         assert_eq!(out.store, Store::default());
         assert!(out.warning.is_some());
-        assert_eq!(std::fs::read_to_string(dir.path().join("profiles.toml.bad")).unwrap(), edited);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("profiles.toml.bad")).unwrap(),
+            edited
+        );
     }
 
     #[test]

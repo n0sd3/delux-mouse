@@ -37,7 +37,10 @@ impl PowerLightConfig {
 
 fn check(field: &'static str, value: u8, min: u8, max: u8) -> Result<(), Error> {
     if value < min || value > max {
-        return Err(Error::OutOfRange { field, value: value as i64 });
+        return Err(Error::OutOfRange {
+            field,
+            value: value as i64,
+        });
     }
     Ok(())
 }
@@ -51,7 +54,11 @@ pub fn encode_power_light(cfg: &PowerLightConfig) -> Result<Vec<u8>, Error> {
     check("sleep_min", cfg.sleep_min, 1, 60)?;
     check("debounce_ms", cfg.debounce_ms, 1, 50)?;
 
-    let brightness = if matches!(cfg.light_mode, 1 | 9) { cfg.brightness } else { 8 };
+    let brightness = if matches!(cfg.light_mode, 1 | 9) {
+        cfg.brightness
+    } else {
+        8
+    };
     let Rgb(r, g, b) = cfg.color;
     let mut p = vec![0u8; 0x0F];
     p[..3].copy_from_slice(&[0x05, 0x0F, 0x01]);

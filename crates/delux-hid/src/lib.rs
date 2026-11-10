@@ -99,7 +99,8 @@ pub fn capture_keyboard_reports(secs: u64) -> Result<Vec<Vec<u8>>, HidError> {
     let api = hidapi::HidApi::new()?;
     let mut paths = Vec::new();
     for d in api.device_list() {
-        let is_kbd = d.vendor_id() == VID && d.product_id() == PID && d.usage_page() == 1 && d.usage() == 6;
+        let is_kbd =
+            d.vendor_id() == VID && d.product_id() == PID && d.usage_page() == 1 && d.usage() == 6;
         if is_kbd && !paths.contains(&d.path().to_owned()) {
             paths.push(d.path().to_owned());
         }
@@ -107,7 +108,10 @@ pub fn capture_keyboard_reports(secs: u64) -> Result<Vec<Vec<u8>>, HidError> {
     if paths.is_empty() {
         return Err(HidError::NotFound);
     }
-    let devs = paths.iter().map(|p| api.open_path(p)).collect::<Result<Vec<_>, _>>()?;
+    let devs = paths
+        .iter()
+        .map(|p| api.open_path(p))
+        .collect::<Result<Vec<_>, _>>()?;
     let start = std::time::Instant::now();
     let mut buf = [0u8; 64];
     let mut out = Vec::new();

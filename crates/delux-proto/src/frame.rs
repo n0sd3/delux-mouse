@@ -11,7 +11,9 @@ const CHUNK: usize = 59;
 
 /// 16-bit wrapping sum of `bytes`.
 pub fn checksum16(bytes: &[u8]) -> u16 {
-    bytes.iter().fold(0u16, |acc, b| acc.wrapping_add(*b as u16))
+    bytes
+        .iter()
+        .fold(0u16, |acc, b| acc.wrapping_add(*b as u16))
 }
 
 /// Wrap an inner packet into one or more report-4 frames.
@@ -62,10 +64,16 @@ mod tests {
         assert_eq!(f.len(), 2);
         assert_eq!(&f[0][..3], &[0x04, 0x40, 0x00]);
         assert_eq!(&f[0][3..62], &inner[..59]);
-        assert_eq!(u16::from_be_bytes([f[0][62], f[0][63]]), checksum16(&f[0][..62]));
+        assert_eq!(
+            u16::from_be_bytes([f[0][62], f[0][63]]),
+            checksum16(&f[0][..62])
+        );
         assert_eq!(&f[1][..3], &[0x04, 0x39, 0x01]);
         assert_eq!(&f[1][3..55], &inner[59..]);
-        assert_eq!(u16::from_be_bytes([f[1][55], f[1][56]]), checksum16(&f[1][..55]));
+        assert_eq!(
+            u16::from_be_bytes([f[1][55], f[1][56]]),
+            checksum16(&f[1][..55])
+        );
     }
 
     #[test]
@@ -82,6 +90,9 @@ mod tests {
     #[test]
     fn too_long_is_error() {
         // chunk index is one byte
-        assert!(matches!(frames(&vec![0u8; 59 * 256 + 1]), Err(Error::PacketTooLong(_))));
+        assert!(matches!(
+            frames(&vec![0u8; 59 * 256 + 1]),
+            Err(Error::PacketTooLong(_))
+        ));
     }
 }

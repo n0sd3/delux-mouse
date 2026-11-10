@@ -127,7 +127,15 @@ fn run(cli: Cli) -> Result<(), String> {
             let rate = PollingRate::from_hz(hz).ok_or(format!("polling inválido: {hz}"))?;
             send(&encode_polling(rate), yes)
         }
-        Cmd::SetDpi { dpis, stage, lod2, ripple, angle_snap, motion_sync, yes } => {
+        Cmd::SetDpi {
+            dpis,
+            stage,
+            lod2,
+            ripple,
+            angle_snap,
+            motion_sync,
+            yes,
+        } => {
             let mut cfg = SensorConfig::default_profile();
             if dpis.is_empty() || dpis.len() > cfg.stages.len() {
                 return Err("informe de 1 a 8 valores de DPI".into());
@@ -145,7 +153,13 @@ fn run(cli: Cli) -> Result<(), String> {
             cfg.motion_sync = motion_sync;
             send(&encode_sensor(&cfg).map_err(|e| e.to_string())?, yes)
         }
-        Cmd::SetPower { sleep, debounce, light_mode, brightness, yes } => {
+        Cmd::SetPower {
+            sleep,
+            debounce,
+            light_mode,
+            brightness,
+            yes,
+        } => {
             let mut cfg = PowerLightConfig::default_profile();
             cfg.sleep_min = sleep.unwrap_or(cfg.sleep_min);
             cfg.debounce_ms = debounce.unwrap_or(cfg.debounce_ms);
@@ -161,14 +175,19 @@ fn run(cli: Cli) -> Result<(), String> {
             map.0[slot] = parse_action(&action)?;
             send(&encode_buttons(&map).map_err(|e| e.to_string())?, yes)
         }
-        Cmd::ResetButtons { yes } => {
-            send(&encode_buttons(&ButtonMap::factory()).map_err(|e| e.to_string())?, yes)
-        }
+        Cmd::ResetButtons { yes } => send(
+            &encode_buttons(&ButtonMap::factory()).map_err(|e| e.to_string())?,
+            yes,
+        ),
         Cmd::Apply { profile, yes } => apply(profile, yes),
         Cmd::MeasureRate { secs } => {
             println!("medindo {secs}s — mova o mouse sem parar …");
             let ts = delux_hid::capture_mouse_report_times(secs).map_err(|e| e.to_string())?;
-            println!("{} relatórios; pico ≈ {} Hz", ts.len(), rate::peak_rate_hz(&ts));
+            println!(
+                "{} relatórios; pico ≈ {} Hz",
+                ts.len(),
+                rate::peak_rate_hz(&ts)
+            );
             Ok(())
         }
         Cmd::ListenKeys { secs } => {
@@ -206,11 +225,14 @@ fn apply(name: Option<String>, yes: bool) -> Result<(), String> {
     let start = Instant::now();
     while svc.status().connection != Connection::Awake {
         if start.elapsed() > Duration::from_secs(10) {
-            return Err("mouse sem sinal há 10 s. Mexa o mouse e tente de novo; nada enviado".into());
+            return Err(
+                "mouse sem sinal há 10 s. Mexa o mouse e tente de novo; nada enviado".into(),
+            );
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    svc.apply(profile, &Section::ALL).map_err(|e| e.to_string())?;
+    svc.apply(profile, &Section::ALL)
+        .map_err(|e| e.to_string())?;
     println!("aplicado.");
     Ok(())
 }
@@ -227,7 +249,10 @@ fn parse_action(s: &str) -> Result<ButtonAction, String> {
         _ => {
             if let Some(h) = s.strip_prefix("key:") {
                 match hex::parse_hex(h)?.as_slice() {
-                    [usage] => ButtonAction::Key { modifiers: 0, usage: *usage },
+                    [usage] => ButtonAction::Key {
+                        modifiers: 0,
+                        usage: *usage,
+                    },
                     _ => return Err("key:<1 byte hex>".into()),
                 }
             } else if let Some(h) = s.strip_prefix("raw:") {
@@ -251,7 +276,10 @@ fn listen(secs: u64) -> Result<(), String> {
             let t = start.elapsed().as_secs_f32();
             match parse_event(&raw) {
                 Some(Event { model, kind }) => {
-                    println!("[{t:7.3}s] model={model:#04x} {kind:?}   ({})", hex::format_hex(&raw))
+                    println!(
+                        "[{t:7.3}s] model={model:#04x} {kind:?}   ({})",
+                        hex::format_hex(&raw)
+                    )
                 }
                 None => println!("[{t:7.3}s] ? ({})", hex::format_hex(&raw)),
             }
@@ -284,7 +312,10 @@ fn wait_awake(dev: &Device) -> Result<(), String> {
     while start.elapsed() < Duration::from_secs(10) {
         if let Some(ev) = dev.read_event(200).map_err(|e| e.to_string())? {
             if ev.model != MODEL_M900PRO_8K_MS4 {
-                return Err(format!("modelo {:#04x} não suportado; nada enviado", ev.model));
+                return Err(format!(
+                    "modelo {:#04x} não suportado; nada enviado",
+                    ev.model
+                ));
             }
             return Ok(());
         }

@@ -41,7 +41,11 @@ pub struct SensorConfig {
 impl SensorConfig {
     /// Starting profile: six enabled stages, two spare.
     pub fn default_profile() -> Self {
-        let stage = |enabled, dpi, color| DpiStage { enabled, dpi, color };
+        let stage = |enabled, dpi, color| DpiStage {
+            enabled,
+            dpi,
+            color,
+        };
         SensorConfig {
             stages: [
                 stage(true, 400, Rgb(255, 0, 0)),
@@ -66,12 +70,18 @@ impl SensorConfig {
 pub fn encode_sensor(cfg: &SensorConfig) -> Result<Vec<u8>, Error> {
     for s in &cfg.stages {
         if s.dpi < DPI_MIN || s.dpi > DPI_MAX || !s.dpi.is_multiple_of(DPI_STEP) {
-            return Err(Error::OutOfRange { field: "dpi", value: s.dpi as i64 });
+            return Err(Error::OutOfRange {
+                field: "dpi",
+                value: s.dpi as i64,
+            });
         }
     }
     let current = cfg.current_stage as usize;
     if current == 0 || current > STAGE_COUNT || !cfg.stages[current - 1].enabled {
-        return Err(Error::OutOfRange { field: "current_stage", value: cfg.current_stage as i64 });
+        return Err(Error::OutOfRange {
+            field: "current_stage",
+            value: cfg.current_stage as i64,
+        });
     }
 
     let mut p = vec![0u8; 0x38];
@@ -144,7 +154,10 @@ mod tests {
             c.stages[0].dpi = bad;
             assert_eq!(
                 encode_sensor(&c),
-                Err(Error::OutOfRange { field: "dpi", value: bad as i64 })
+                Err(Error::OutOfRange {
+                    field: "dpi",
+                    value: bad as i64
+                })
             );
         }
     }
@@ -164,7 +177,10 @@ mod tests {
             c.current_stage = bad;
             assert_eq!(
                 encode_sensor(&c),
-                Err(Error::OutOfRange { field: "current_stage", value: bad as i64 })
+                Err(Error::OutOfRange {
+                    field: "current_stage",
+                    value: bad as i64
+                })
             );
         }
     }

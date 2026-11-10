@@ -24,7 +24,11 @@ pub fn parse_hex(input: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn format_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

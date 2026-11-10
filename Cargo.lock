@@ -139,6 +139,7 @@ dependencies = [
  "delux-profile",
  "delux-proto",
  "serde",
+ "tempfile",
  "thiserror",
 ]
 

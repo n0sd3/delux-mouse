@@ -11,11 +11,11 @@ pub mod sensor;
 
 pub use buttons::{encode_buttons, ButtonAction, ButtonMap, SLOT_COUNT};
 pub use event::{parse_event, BatteryState, Event, EventKind, MODEL_M900PRO_8K_MS4};
+pub use frame::{checksum16, frames, Frame, REPORT_LEN};
 pub use polling::{encode_polling, PollingRate};
-pub use sensor::{encode_sensor, DpiStage, Lod, Rgb, SensorConfig};
 pub use power_light::{encode_power_light, PowerLightConfig};
 pub use reset::encode_factory_reset;
-pub use frame::{checksum16, frames, Frame, REPORT_LEN};
+pub use sensor::{encode_sensor, DpiStage, Lod, Rgb, SensorConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

@@ -48,7 +48,12 @@ impl Profile {
     /// The vendor driver's defaults: what "restore factory settings" sends.
     pub fn factory(name: &str) -> Self {
         let mut p = Self::default_named(name);
-        for (stage, dpi) in p.sensor.stages.iter_mut().zip([400, 800, 1200, 1600, 3200, 5000]) {
+        for (stage, dpi) in p
+            .sensor
+            .stages
+            .iter_mut()
+            .zip([400, 800, 1200, 1600, 3200, 5000])
+        {
             stage.dpi = dpi;
         }
         p.sensor.current_stage = 2;
@@ -82,7 +87,10 @@ impl Profile {
                 errs.push(format!("slot {} tem mais de um script", s.slot));
             }
             seen.push(s.slot);
-            let expected = ButtonAction::Key { modifiers: 0, usage: s.hotkey_usage };
+            let expected = ButtonAction::Key {
+                modifiers: 0,
+                usage: s.hotkey_usage,
+            };
             if self.buttons.0[s.slot] != expected {
                 errs.push(format!("slot {} não emite a tecla do seu script", s.slot));
             }
@@ -105,8 +113,12 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 4] =
-        [Section::Sensor, Section::Polling, Section::PowerLight, Section::Buttons];
+    pub const ALL: [Section; 4] = [
+        Section::Sensor,
+        Section::Polling,
+        Section::PowerLight,
+        Section::Buttons,
+    ];
 }
 
 /// Sections whose firmware packet differs between two profiles.
@@ -130,7 +142,10 @@ mod tests {
     fn with_script(slot: usize) -> Profile {
         let mut p = Profile::default_named("t");
         if slot < p.buttons.0.len() {
-            p.buttons.0[slot] = ButtonAction::Key { modifiers: 0, usage: 0x68 };
+            p.buttons.0[slot] = ButtonAction::Key {
+                modifiers: 0,
+                usage: 0x68,
+            };
         }
         p.scripts.push(ScriptBinding {
             slot,
@@ -150,7 +165,13 @@ mod tests {
     fn factory_profile_matches_vendor_defaults() {
         let p = Profile::factory("Fábrica");
         assert_eq!(p.validate(), Ok(()));
-        let dpis: Vec<u16> = p.sensor.stages.iter().filter(|s| s.enabled).map(|s| s.dpi).collect();
+        let dpis: Vec<u16> = p
+            .sensor
+            .stages
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| s.dpi)
+            .collect();
         assert_eq!(dpis, vec![400, 800, 1200, 1600, 3200, 5000]);
         assert_eq!(p.sensor.current_stage, 2);
         assert!(p.sensor.ripple && p.sensor.motion_sync && !p.sensor.angle_snap);
@@ -214,7 +235,10 @@ mod tests {
         let mut b = a.clone();
         b.buttons.0[7] = ButtonAction::Disabled;
         b.sensor.stages[0].dpi = 800;
-        assert_eq!(changed_sections(&a, &b), vec![Section::Sensor, Section::Buttons]);
+        assert_eq!(
+            changed_sections(&a, &b),
+            vec![Section::Sensor, Section::Buttons]
+        );
     }
 
     #[test]

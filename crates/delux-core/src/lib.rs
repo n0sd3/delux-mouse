@@ -1,5 +1,8 @@
 //! Device service: tracks what the mouse reports and guards every write.
 
+pub mod controller;
+pub mod scripts;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -79,7 +82,11 @@ pub enum ApplyError {
     Invalid(Vec<String>),
     /// Stopped partway: `sent` reached the mouse, `pending` did not.
     #[error("envio interrompido: {message}")]
-    Io { sent: Vec<Section>, pending: Vec<Section>, message: String },
+    Io {
+        sent: Vec<Section>,
+        pending: Vec<Section>,
+        message: String,
+    },
 }
 
 pub type Opener = Box<dyn Fn() -> Result<Box<dyn Link>, HidError> + Send + Sync>;
@@ -294,11 +301,14 @@ impl DeviceService {
             }
             if let Err(e) = link.as_ref().expect("checked above").write_frames(frames) {
                 *link = None;
-                return Err((done, ApplyError::Io {
-                    sent: vec![],
-                    pending: vec![],
-                    message: e.to_string(),
-                }));
+                return Err((
+                    done,
+                    ApplyError::Io {
+                        sent: vec![],
+                        pending: vec![],
+                        message: e.to_string(),
+                    },
+                ));
             }
         }
         Ok(())
@@ -360,7 +370,9 @@ mod tests {
                 return Err(HidError::Io("unplugged".into()));
             }
             self.0.written.lock().unwrap().extend_from_slice(f);
-            self.0.clock.advance(self.0.advance_on_write_ms.load(Ordering::SeqCst));
+            self.0
+                .clock
+                .advance(self.0.advance_on_write_ms.load(Ordering::SeqCst));
             if self.0.heartbeat_after_write.load(Ordering::SeqCst) {
                 self.0.events.lock().unwrap().push_back(battery(0x30, 84));
             }
@@ -369,7 +381,13 @@ mod tests {
     }
 
     fn battery(model: u8, percent: u8) -> Event {
-        Event { model, kind: EventKind::Battery { state: BatteryState::Discharging, percent } }
+        Event {
+            model,
+            kind: EventKind::Battery {
+                state: BatteryState::Discharging,
+                percent,
+            },
+        }
     }
 
     fn setup() -> (Arc<World>, DeviceService) {
@@ -426,7 +444,14 @@ mod tests {
     #[test]
     fn dpi_stage_is_tracked() {
         let (world, svc) = setup();
-        feed(&world, &svc, Event { model: 0x30, kind: EventKind::DpiStage(4) });
+        feed(
+            &world,
+            &svc,
+            Event {
+                model: 0x30,
+                kind: EventKind::DpiStage(4),
+            },
+        );
         assert_eq!(svc.status().dpi_stage, Some(4));
     }
 
@@ -435,7 +460,10 @@ mod tests {
         let (world, svc) = setup();
         feed(&world, &svc, battery(0x30, 84));
         world.clock.advance(6001);
-        assert_eq!(svc.apply(&Profile::default_named("t"), &Section::ALL), Err(ApplyError::Asleep));
+        assert_eq!(
+            svc.apply(&Profile::default_named("t"), &Section::ALL),
+            Err(ApplyError::Asleep)
+        );
         assert!(world.written.lock().unwrap().is_empty());
     }
 
@@ -443,7 +471,10 @@ mod tests {
     fn apply_refused_before_any_event() {
         let (world, svc) = setup();
         svc.poll_once();
-        assert_eq!(svc.apply(&Profile::default_named("t"), &Section::ALL), Err(ApplyError::Asleep));
+        assert_eq!(
+            svc.apply(&Profile::default_named("t"), &Section::ALL),
+            Err(ApplyError::Asleep)
+        );
         assert!(world.written.lock().unwrap().is_empty());
     }
 
@@ -457,7 +488,10 @@ mod tests {
         match svc.apply(&p, &Section::ALL) {
             Err(ApplyError::Io { sent, pending, .. }) => {
                 assert_eq!(sent, vec![Section::Sensor]);
-                assert_eq!(pending, vec![Section::Polling, Section::PowerLight, Section::Buttons]);
+                assert_eq!(
+                    pending,
+                    vec![Section::Polling, Section::PowerLight, Section::Buttons]
+                );
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -475,7 +509,10 @@ mod tests {
         match svc.apply(&Profile::default_named("t"), &Section::ALL) {
             Err(ApplyError::Io { sent, pending, .. }) => {
                 assert_eq!(sent, vec![Section::Sensor]);
-                assert_eq!(pending, vec![Section::Polling, Section::PowerLight, Section::Buttons]);
+                assert_eq!(
+                    pending,
+                    vec![Section::Polling, Section::PowerLight, Section::Buttons]
+                );
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -486,7 +523,10 @@ mod tests {
         svc.poll_once(); // reopens
         feed(&world, &svc, battery(0x30, 80));
         assert_eq!(svc.status().connection, Connection::Awake);
-        assert_eq!(svc.apply(&Profile::default_named("t"), &[Section::Polling]), Ok(()));
+        assert_eq!(
+            svc.apply(&Profile::default_named("t"), &[Section::Polling]),
+            Ok(())
+        );
     }
 
     #[test]
@@ -494,8 +534,15 @@ mod tests {
         let (world, svc) = setup();
         feed(&world, &svc, battery(0x30, 84));
         world.fail_write_at.store(1, Ordering::SeqCst);
-        match svc.apply(&Profile::default_named("t"), &[Section::Sensor, Section::Polling]) {
-            Err(ApplyError::Io { sent, pending, message }) => {
+        match svc.apply(
+            &Profile::default_named("t"),
+            &[Section::Sensor, Section::Polling],
+        ) {
+            Err(ApplyError::Io {
+                sent,
+                pending,
+                message,
+            }) => {
                 assert_eq!(sent, vec![]);
                 assert_eq!(pending, vec![Section::Sensor, Section::Polling]);
                 assert!(message.contains("unplugged"), "{message}");
@@ -540,7 +587,10 @@ mod tests {
         feed(&world, &svc, battery(0x30, 84));
         let mut p = Profile::default_named("t");
         p.sensor.stages[0].dpi = 123;
-        assert!(matches!(svc.apply(&p, &Section::ALL), Err(ApplyError::Invalid(_))));
+        assert!(matches!(
+            svc.apply(&p, &Section::ALL),
+            Err(ApplyError::Invalid(_))
+        ));
         assert!(world.written.lock().unwrap().is_empty());
     }
 
@@ -550,7 +600,12 @@ mod tests {
         feed(&world, &svc, battery(0x30, 84));
         let p = Profile::default_named("t");
         // deliberately out of order: the service sends in firmware order
-        let asked = [Section::Buttons, Section::Sensor, Section::PowerLight, Section::Polling];
+        let asked = [
+            Section::Buttons,
+            Section::Sensor,
+            Section::PowerLight,
+            Section::Polling,
+        ];
         assert_eq!(svc.apply(&p, &asked), Ok(()));
         let mut expected = Vec::new();
         expected.extend(frames(&encode_sensor(&p.sensor).unwrap()).unwrap());
@@ -566,7 +621,10 @@ mod tests {
         feed(&world, &svc, battery(0x30, 84));
         let p = Profile::default_named("t");
         assert_eq!(svc.apply(&p, &[Section::Polling]), Ok(()));
-        assert_eq!(*world.written.lock().unwrap(), frames(&encode_polling(p.polling)).unwrap());
+        assert_eq!(
+            *world.written.lock().unwrap(),
+            frames(&encode_polling(p.polling)).unwrap()
+        );
     }
 
     #[test]

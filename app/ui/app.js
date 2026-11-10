@@ -269,8 +269,7 @@ function lightTab() {
     row("Modo", select(LIGHT_MODES.map((l, i) => [i, l]), d.light_mode, (v) => (d.light_mode = v))),
     row("Cor", color, el("label", {}, check(draft.light_follows_dpi, (v) => (draft.light_follows_dpi = v)), " acompanhar a cor do estágio de DPI atual")),
     row("Brilho (1–8)", num(d.brightness, 1, 8, 1, (v) => (d.brightness = v)), el("span", { className: "muted", textContent: "vale para os modos Estática e Modo 9" })),
-    row("Velocidade (4–8)", num(d.breath_speed, 4, 8, 1, (v) => (d.breath_speed = v))),
-    row("Apagar luz após (min)", num(d.light_off_min, 1, 60, 1, (v) => (d.light_off_min = v))));
+    row("Velocidade (4–8)", num(d.breath_speed, 4, 8, 1, (v) => (d.breath_speed = v))));
 }
 
 function powerTab() {
@@ -289,8 +288,8 @@ function powerTab() {
   };
   return el("div", {},
     el("h2", { textContent: "Energia do mouse" }),
-    row("Dormir após (min)", num(d.sleep_min, 1, 60, 1, (v) => (d.sleep_min = v)), unverified("sleep_min")),
-    row("Debounce (ms)", num(d.debounce_ms, 1, 50, 1, (v) => (d.debounce_ms = v)), unverified("debounce_ms")),
+    row("Dormir após (min)", num(d.sleep_min, 1, 20, 1, (v) => (d.sleep_min = v)), unverified("sleep_min")),
+    row("Debounce (ms)", num(d.debounce_ms, 2, 50, 2, (v) => (d.debounce_ms = v)), unverified("debounce_ms")),
     el("h2", { textContent: "App" }),
     row("Avisar bateria abaixo de (%)", low),
     row("Abrir ao iniciar sessão", auto),

@@ -102,6 +102,8 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         secs: u64,
     },
+    /// Modo cabo, só leitura: pede ao mouse os feature reports declarados.
+    WiredRead,
     /// Reset de fábrica (cmd 0x0C).
     Reset {
         #[arg(long)]
@@ -194,6 +196,28 @@ fn run(cli: Cli) -> Result<(), String> {
             println!("escutando teclas {secs}s …");
             for r in delux_hid::capture_keyboard_reports(secs).map_err(|e| e.to_string())? {
                 println!("{}", hex::format_hex(&r));
+            }
+            Ok(())
+        }
+        Cmd::WiredRead => {
+            // (report id, declared data length) from the wired HID descriptor.
+            let ids = [
+                (0x04, 51),
+                (0x05, 12),
+                (0x06, 8),
+                (0x07, 7),
+                (0x08, 58),
+                (0x0A, 7),
+                (0x0B, 7),
+                (0x0C, 5),
+                (0x10, 7),
+                (0xA0, 7),
+            ];
+            for (id, r) in delux_hid::wired_read_feature_reports(&ids).map_err(|e| e.to_string())? {
+                match r {
+                    Ok(bytes) => println!("{id:#04x}: {}", hex::format_hex(&bytes)),
+                    Err(e) => println!("{id:#04x}: erro: {e}"),
+                }
             }
             Ok(())
         }
@@ -300,8 +324,9 @@ fn send(inner: &[u8], yes: bool) -> Result<(), String> {
         return Ok(());
     }
     let dev = Device::open().map_err(|e| e.to_string())?;
+    println!("transporte: {:?}", dev.transport());
     wait_awake(&dev)?;
-    dev.write_frames(&frames).map_err(|e| e.to_string())?;
+    dev.write_packet(inner).map_err(|e| e.to_string())?;
     println!("enviado.");
     Ok(())
 }

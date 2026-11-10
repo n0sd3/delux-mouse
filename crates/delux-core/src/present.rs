@@ -57,6 +57,7 @@ mod tests {
             dpi_stage: None,
             polling: None,
             light_mode: None,
+            transport: None,
         }
     }
 

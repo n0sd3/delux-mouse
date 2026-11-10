@@ -861,6 +861,7 @@ version = "0.1.0"
 dependencies = [
  "delux-proto",
  "hidapi",
+ "serde",
  "thiserror 2.0.21",
 ]
 

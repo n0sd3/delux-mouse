@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 delux-proto = { path = "../delux-proto" }
 thiserror.workspace = true
+serde.workspace = true
 # Shared (non-exclusive) open: the vendor collection lives on the same macOS
 # HID device as the mouse's consumer/system-control keys, which must keep working.
 hidapi = { version = "2", features = ["macos-shared-device"] }

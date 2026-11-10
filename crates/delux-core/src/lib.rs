@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub use delux_hid::Transport;
 use delux_hid::{Device, HidError};
 use delux_profile::{Profile, Section};
 use delux_proto::{
     encode_buttons, encode_factory_reset, encode_macro, encode_polling, encode_power_light,
-    encode_sensor, frames, BatteryState, Event, EventKind, Frame, PollingRate,
-    MODEL_M900PRO_8K_MS4,
+    encode_sensor, BatteryState, Event, EventKind, PollingRate, MODEL_M900PRO_8K_MS4,
 };
 use serde::Serialize;
 
@@ -38,15 +38,20 @@ const CONFIRM_POLL_MS: i32 = 250;
 /// The transport, as the service needs it.
 pub trait Link: Send {
     fn read_event(&self, timeout_ms: i32) -> Result<Option<Event>, HidError>;
-    fn write_frames(&self, frames: &[Frame]) -> Result<(), HidError>;
+    /// Send one command (inner packet); the link frames it for its transport.
+    fn write_packet(&self, inner: &[u8]) -> Result<(), HidError>;
+    fn transport(&self) -> Transport;
 }
 
 impl Link for Device {
     fn read_event(&self, timeout_ms: i32) -> Result<Option<Event>, HidError> {
         Device::read_event(self, timeout_ms)
     }
-    fn write_frames(&self, frames: &[Frame]) -> Result<(), HidError> {
-        Device::write_frames(self, frames)
+    fn write_packet(&self, inner: &[u8]) -> Result<(), HidError> {
+        Device::write_packet(self, inner)
+    }
+    fn transport(&self) -> Transport {
+        Device::transport(self)
     }
 }
 
@@ -89,6 +94,8 @@ pub struct Status {
     pub polling: Option<PollingRate>,
     /// Light mode index the mouse last reported.
     pub light_mode: Option<u8>,
+    /// Cable or receiver.
+    pub transport: Option<Transport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -133,6 +140,7 @@ struct Inner {
     link: Mutex<Option<Box<dyn Link>>>,
     /// Mirrors `link.is_some()` so `status()` never waits on a running apply.
     connected: AtomicBool,
+    transport: Mutex<Option<Transport>>,
     seen: Mutex<Seen>,
 }
 
@@ -151,6 +159,7 @@ impl DeviceService {
                 on_change,
                 link: Mutex::new(None),
                 connected: AtomicBool::new(false),
+                transport: Mutex::new(None),
                 seen: Mutex::new(Seen::default()),
             }),
         }
@@ -200,6 +209,7 @@ impl DeviceService {
                 None => false,
             };
             self.inner.connected.store(connected, Ordering::SeqCst);
+            *self.inner.transport.lock().unwrap() = link.as_ref().map(|l| l.transport());
             connected
         };
         self.publish();
@@ -267,7 +277,13 @@ impl DeviceService {
             dpi_stage: seen.dpi_stage,
             polling: seen.polling,
             light_mode: seen.light_mode,
+            transport: self.transport().filter(|_| has_link),
         }
+    }
+
+    /// Cable or receiver, when connected.
+    pub fn transport(&self) -> Option<Transport> {
+        *self.inner.transport.lock().unwrap()
     }
 
     fn heard_within(&self, seen: &Seen, window_ms: u64) -> bool {
@@ -288,7 +304,12 @@ impl DeviceService {
         for s in Section::ALL.into_iter().filter(|s| sections.contains(s)) {
             let inners = match s {
                 Section::Sensor => vec![encode_sensor(&profile.sensor).map_err(invalid)?],
-                Section::Polling => vec![encode_polling(profile.polling)],
+                // The cable is full-speed USB: the vendor driver never sends
+                // more than 1000 Hz over it.
+                Section::Polling => vec![encode_polling(match self.transport() {
+                    Some(Transport::Wired) if profile.polling.hz() > 1000 => PollingRate::Hz1000,
+                    _ => profile.polling,
+                })],
                 Section::PowerLight => {
                     vec![encode_power_light(&profile.power_light).map_err(invalid)?]
                 }
@@ -305,7 +326,7 @@ impl DeviceService {
                 }
             };
             for inner in inners {
-                packets.push((s, frames(&inner).map_err(invalid)?));
+                packets.push((s, inner));
             }
         }
         let asked: Vec<Section> = Section::ALL
@@ -336,21 +357,21 @@ impl DeviceService {
     /// nothing observable on its own (verified on hardware), so, like the
     /// vendor driver, it is followed by every section of the factory profile.
     pub fn factory_reset(&self) -> Result<(), ApplyError> {
-        let reset = frames(&encode_factory_reset()).expect("constant packet");
-        self.send_all(vec![reset]).map_err(|(_, e)| match e {
-            ApplyError::Io { message, .. } => ApplyError::Io {
-                sent: vec![],
-                pending: Section::ALL.to_vec(),
-                message,
-            },
-            gate => gate,
-        })?;
+        self.send_all(vec![encode_factory_reset()])
+            .map_err(|(_, e)| match e {
+                ApplyError::Io { message, .. } => ApplyError::Io {
+                    sent: vec![],
+                    pending: Section::ALL.to_vec(),
+                    message,
+                },
+                gate => gate,
+            })?;
         self.apply(&Profile::factory("factory"), &Section::ALL)
     }
 
-    fn send(&self, packets: Vec<(Section, Vec<Frame>)>) -> Result<(), ApplyError> {
-        let (sections, frames): (Vec<_>, Vec<_>) = packets.into_iter().unzip();
-        self.send_all(frames).map_err(|(done, e)| match e {
+    fn send(&self, packets: Vec<(Section, Vec<u8>)>) -> Result<(), ApplyError> {
+        let (sections, inners): (Vec<_>, Vec<_>) = packets.into_iter().unzip();
+        self.send_all(inners).map_err(|(done, e)| match e {
             // A gate refused before anything was sent: the plain reason is the whole story.
             ApplyError::NoReceiver | ApplyError::Asleep | ApplyError::UnsupportedModel(_)
                 if done == 0 =>
@@ -387,9 +408,9 @@ impl DeviceService {
     /// Send packets one by one, re-checking every gate before each and
     /// waiting for a sign of life after each. On failure returns how many
     /// packets are known to have reached an awake mouse.
-    fn send_all(&self, packets: Vec<Vec<Frame>>) -> Result<(), (usize, ApplyError)> {
+    fn send_all(&self, packets: Vec<Vec<u8>>) -> Result<(), (usize, ApplyError)> {
         let mut link = self.inner.link.lock().unwrap();
-        for (done, frames) in packets.iter().enumerate() {
+        for (done, inner) in packets.iter().enumerate() {
             let fail = |e| (done, e);
             let io = |message: String| ApplyError::Io {
                 sent: vec![],
@@ -420,7 +441,7 @@ impl DeviceService {
                 }
             }
             let l = link.as_ref().expect("checked above");
-            if let Err(e) = l.write_frames(frames) {
+            if let Err(e) = l.write_packet(inner) {
                 self.drop_link(&mut link);
                 return Err(fail(io(e.to_string())));
             }
@@ -480,7 +501,7 @@ mod tests {
     struct World {
         clock: Arc<FakeClock>,
         events: Mutex<VecDeque<Event>>,
-        written: Mutex<Vec<Frame>>,
+        written: Mutex<Vec<delux_proto::Frame>>,
         writes: AtomicUsize,
         /// Fail the Nth write (1-based); 0 = never.
         fail_write_at: AtomicUsize,
@@ -489,6 +510,7 @@ mod tests {
         /// Keep a heartbeat queued after each write, like an awake mouse.
         heartbeat_after_write: AtomicBool,
         receiver_present: AtomicBool,
+        wired: AtomicBool,
     }
 
     struct FakeLink(Arc<World>);
@@ -499,13 +521,25 @@ mod tests {
             }
             Ok(self.0.events.lock().unwrap().pop_front())
         }
-        fn write_frames(&self, f: &[Frame]) -> Result<(), HidError> {
+        fn transport(&self) -> Transport {
+            if self.0.wired.load(Ordering::SeqCst) {
+                Transport::Wired
+            } else {
+                Transport::Receiver
+            }
+        }
+        fn write_packet(&self, inner: &[u8]) -> Result<(), HidError> {
             let n = self.0.writes.fetch_add(1, Ordering::SeqCst) + 1;
             if n == self.0.fail_write_at.load(Ordering::SeqCst) {
                 self.0.receiver_present.store(false, Ordering::SeqCst);
                 return Err(HidError::Io("unplugged".into()));
             }
-            self.0.written.lock().unwrap().extend_from_slice(f);
+            // Recorded as receiver frames, which the expectations are written in.
+            self.0
+                .written
+                .lock()
+                .unwrap()
+                .extend(frames(inner).unwrap());
             self.0
                 .clock
                 .advance(self.0.advance_on_write_ms.load(Ordering::SeqCst));
@@ -663,6 +697,31 @@ mod tests {
         assert_eq!(s.dpi_stage, Some(4));
         assert_eq!(s.polling, Some(delux_proto::PollingRate::Hz500));
         assert_eq!(s.light_mode, Some(2));
+    }
+
+    #[test]
+    fn over_the_cable_polling_never_exceeds_1000_hz() {
+        let (world, svc) = setup();
+        world.wired.store(true, Ordering::SeqCst);
+        feed(&world, &svc, battery(0x30, 84));
+        assert_eq!(svc.status().transport, Some(Transport::Wired));
+        let mut p = Profile::default_named("t");
+        p.polling = delux_proto::PollingRate::Hz8000;
+        assert_eq!(svc.apply(&p, &[Section::Polling]), Ok(()));
+        assert_eq!(
+            *world.written.lock().unwrap(),
+            frames(&encode_polling(delux_proto::PollingRate::Hz1000)).unwrap()
+        );
+    }
+
+    #[test]
+    fn transport_is_reported_and_cleared() {
+        let (world, svc) = setup();
+        feed(&world, &svc, battery(0x30, 84));
+        assert_eq!(svc.status().transport, Some(Transport::Receiver));
+        world.receiver_present.store(false, Ordering::SeqCst);
+        svc.poll_once();
+        assert_eq!(svc.status().transport, None);
     }
 
     #[test]

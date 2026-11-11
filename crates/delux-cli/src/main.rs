@@ -113,7 +113,16 @@ enum Cmd {
         #[arg(long, default_value_t = 8)]
         secs: u64,
     },
-    /// Mostra todos os relatórios que o mouse emite, de todas as interfaces.
+    /// Envia o mapa de fábrica com os três botões extras trocados (diagnóstico).
+    /// Cada função é uma ação de `set-button` (ex.: raw:100003, key:68, back).
+    SetExtraButtons {
+        dpi: String,
+        front: String,
+        back: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Mostra o que o mouse emite em todas as interfaces, sem o movimento puro.
     Capture {
         #[arg(long, default_value_t = 8)]
         secs: u64,
@@ -238,10 +247,15 @@ fn run(cli: Cli) -> Result<(), String> {
         }
         Cmd::Capture { secs } => {
             let mut last: Option<(String, Vec<u8>)> = None;
-            for r in delux_hid::capture_reports(secs, false).map_err(|e| e.to_string())? {
-                // Skip the 2 s battery heartbeat and exact repeats.
+            for mut r in delux_hid::capture_reports(secs, false).map_err(|e| e.to_string())? {
+                // Skip the 2 s battery heartbeat.
                 if r.data.first() == Some(&0x03) && r.data.get(2) == Some(&0x40) {
                     continue;
+                }
+                // Mouse interface: blank out X/Y so only buttons, wheel and
+                // pan remain; plain movement then collapses into repeats.
+                if r.source == "0001:02" && r.data.len() >= 5 {
+                    r.data[1..5].fill(0);
                 }
                 if last.as_ref() == Some(&(r.source.clone(), r.data.clone())) {
                     continue;
@@ -255,6 +269,19 @@ fn run(cli: Cli) -> Result<(), String> {
                 last = Some((r.source, r.data));
             }
             Ok(())
+        }
+        Cmd::SetExtraButtons {
+            dpi,
+            front,
+            back,
+            yes,
+        } => {
+            // Slots verified on hardware: 3 = DPI button, 6 = front side, 7 = back side.
+            let mut map = ButtonMap::factory();
+            map.0[3] = parse_action(&dpi)?;
+            map.0[6] = parse_action(&front)?;
+            map.0[7] = parse_action(&back)?;
+            send(&encode_buttons(&map).map_err(|e| e.to_string())?, yes)
         }
         Cmd::WiredRead => {
             // (report id, declared data length) from the wired HID descriptor.

@@ -337,6 +337,6 @@ Método: leitura dos relatórios brutos da interface de mouse via hidapi, drenan
 | `0x04` LOD (byte 3) | confirmado pelo usuário (percepção ao levantar o mouse) |
 | `0x04` ripple (byte 4) | inconclusivo: aspereza do movimento 0,128/0,089 desligado × 0,103/0,092 ligado |
 | `0x04` motion sync (byte 7) | inconclusivo, indício fraco: aspereza 0,123/0,138 desligado × 0,115/0,101 ligado |
-| `0x05` debounce | não verificado |
+| `0x05` debounce (byte 10, passos de 2 ms) | **confirmado** por duração de cliques rápidos (`delux measure-clicks`): 2 ms → 50 cliques em 8 s, menor intervalo 23,7 ms; 50 ms → 7 cliques, menor intervalo 51,7 ms, duração mediana 673 ms (cliques fundidos). Um par só |
 | item de login (LaunchAgent) | **confirmado**: `launchctl bootstrap` do plist inicia o app |
 | atalho global já em uso | **não detectável**: `RegisterEventHotKey(F13)` devolve 0 para dois processos ao mesmo tempo; o macOS não avisa conflito |

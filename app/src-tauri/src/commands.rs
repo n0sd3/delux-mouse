@@ -33,7 +33,7 @@ const SLOT_NAMES: [&str; 18] = [
 
 /// Settings sent as the vendor driver sends them, but whose effect could
 /// not be confirmed by measurement on hardware.
-const UNVERIFIED: [&str; 3] = ["ripple", "motion_sync", "debounce_ms"];
+const UNVERIFIED: [&str; 2] = ["ripple", "motion_sync"];
 
 #[derive(Serialize)]
 pub struct UiState {

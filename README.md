@@ -7,7 +7,9 @@ App de barra de menu para macOS que substitui o driver Windows do **Delux M900 P
 - Botões do mouse podem rodar comandos/scripts no Mac.
 - Vários perfis; troca pelo menu.
 
-Uso pessoal, não assinado. Protocolo obtido por análise estática do driver oficial — ver `docs/protocol/delux-protocol.md`.
+Projeto independente, sem vínculo com a Delux. App não assinado. O protocolo foi obtido por análise do driver oficial para fins de interoperabilidade — ver `docs/protocol/delux-protocol.md`; nenhum arquivo do driver é distribuído aqui.
+
+**Use por sua conta e risco.** Testado em um único mouse (modelo de código `0x30`, receptor `1D57:FA65`, cabo `1D57:FA73`). Licença MIT.
 
 ## Limites
 

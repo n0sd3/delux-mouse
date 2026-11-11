@@ -325,3 +325,18 @@ Relatórios completos da análise (fora do git): `.re/macros-ms4-report.md`, `.r
 ### Outros achados
 
 - Página MS_4 envia `0C 0A 01 FE 01 FE…` no início de **todo** Aplicar (parece preâmbulo, não reset). O app não envia e os comandos funcionam sem ele.
+
+### Verificação por medição — 2026-11-10/11, terceira rodada
+
+Método: leitura dos relatórios brutos da interface de mouse via hidapi, drenando a fila sem bloqueio (`delux measure-motion`). O método anterior (leitura bloqueante com timeout) perdia relatórios e fez parecer que o macOS não entregava mais de ~1000 Hz — conclusão errada.
+
+| item | resultado |
+|---|---|
+| `0x06` polling | **confirmado em todas as taxas**: 1000 → 990/1015 Hz, 2000 → 2019, 4000 → 4000, 8000 → 7976/7984 (relatórios por segundo em movimento contínuo) |
+| `0x04` angle snap (byte 6) | **confirmado** com guia física inclinada ~5°: desvio perpendicular 2,48/2,66/2,38 % desligado × 0,26/0,38/0,39 % ligado (3 pares alternados) |
+| `0x04` LOD (byte 3) | confirmado pelo usuário (percepção ao levantar o mouse) |
+| `0x04` ripple (byte 4) | inconclusivo: aspereza do movimento 0,128/0,089 desligado × 0,103/0,092 ligado |
+| `0x04` motion sync (byte 7) | inconclusivo, indício fraco: aspereza 0,123/0,138 desligado × 0,115/0,101 ligado |
+| `0x05` debounce | não verificado |
+| item de login (LaunchAgent) | **confirmado**: `launchctl bootstrap` do plist inicia o app |
+| atalho global já em uso | **não detectável**: `RegisterEventHotKey(F13)` devolve 0 para dois processos ao mesmo tempo; o macOS não avisa conflito |

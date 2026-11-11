@@ -31,9 +31,9 @@ const SLOT_NAMES: [&str; 18] = [
     "Scroll para baixo",
 ];
 
-/// Settings sent without error but whose effect could not be confirmed on
-/// hardware (nothing observable, or only a matter of feel).
-const UNVERIFIED: [&str; 5] = ["lod", "ripple", "angle_snap", "motion_sync", "debounce_ms"];
+/// Settings sent as the vendor driver sends them, but whose effect could
+/// not be confirmed by measurement on hardware.
+const UNVERIFIED: [&str; 3] = ["ripple", "motion_sync", "debounce_ms"];
 
 #[derive(Serialize)]
 pub struct UiState {

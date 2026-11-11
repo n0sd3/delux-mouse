@@ -79,7 +79,7 @@ let scriptDraft = {};   // slot -> { label, command } typed but not yet saved
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const active = () => state.store.profiles.find((p) => p.name === state.store.active);
 const unverified = (key) => state.unverified.includes(key)
-  ? el("span", { className: "badge", textContent: "não verificado", title: "Enviado ao mouse sem erro, mas o efeito não foi confirmado nos testes." })
+  ? el("span", { className: "badge", textContent: "não verificado", title: "Enviado como o driver oficial envia; o efeito não pôde ser confirmado por medição." })
   : "";
 const hex = ([r, g, b]) => "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
 const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
@@ -237,9 +237,8 @@ function sensorTab() {
     el("h2", { textContent: "Estágios de DPI" }), table, live,
     el("h2", { textContent: "Sensor" }),
     row("Polling rate", select(POLLING, draft.polling, (v) => (draft.polling = v)),
-      el("span", { className: "muted", textContent: !["Hz2000", "Hz4000", "Hz8000"].includes(draft.polling) ? ""
-        : state.status.transport === "Wired" ? "no cabo o mouse fica em 1000 Hz; o valor escolhido vale no receptor"
-        : "acima de 1000 Hz o Mac não consegue medir; enviado como o driver envia" })),
+      el("span", { className: "muted", textContent: state.status.transport === "Wired" && ["Hz2000", "Hz4000", "Hz8000"].includes(draft.polling)
+        ? "no cabo o mouse fica em 1000 Hz; o valor escolhido vale no receptor" : "" })),
     row("Distância de levantamento", select([["Mm1", "1 mm"], ["Mm2", "2 mm"]], d.lod, (v) => (d.lod = v)), unverified("lod")),
     row("Ripple control", check(d.ripple, (v) => (d.ripple = v)), unverified("ripple")),
     row("Angle snapping", check(d.angle_snap, (v) => (d.angle_snap = v)), unverified("angle_snap")),
